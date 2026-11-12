@@ -107,14 +107,14 @@ const twoWeeks = 14 * 24 * time.Hour
 
 func mockVersions() []mockVersion {
 	return []mockVersion{
-		{id: 1, digest: "sha256:old-snapshot", tags: []string{"0.0.1-snapshot.20261101000000"}, age: twoWeeks + time.Hour,
+		{id: 1, digest: "sha256:old-snapshot", tags: []string{"v0.0.1-snapshot.20261101000000"}, age: twoWeeks + time.Hour,
 			platforms: []string{"sha256:old-amd64", "sha256:shared-arm64"}},
 		{id: 2, digest: "sha256:old-amd64", age: twoWeeks + time.Hour},
 		{id: 3, digest: "sha256:shared-arm64", age: twoWeeks + time.Hour},
-		{id: 4, digest: "sha256:new-snapshot", tags: []string{"0.0.2-snapshot.20261129000000"}, age: time.Hour,
+		{id: 4, digest: "sha256:new-snapshot", tags: []string{"v0.0.2-snapshot.20261129000000"}, age: time.Hour,
 			platforms: []string{"sha256:new-amd64"}},
 		{id: 5, digest: "sha256:new-amd64", age: time.Hour},
-		{id: 6, digest: "sha256:release", tags: []string{"0.0.1"}, age: 30 * 24 * time.Hour,
+		{id: 6, digest: "sha256:release", tags: []string{"v0.0.1"}, age: 30 * 24 * time.Hour,
 			platforms: []string{"sha256:release-amd64", "sha256:shared-arm64"}},
 		{id: 7, digest: "sha256:release-amd64", age: 30 * 24 * time.Hour},
 		{id: 8, digest: "sha256:orphan", age: 60 * 24 * time.Hour},
@@ -146,7 +146,7 @@ func TestADryRunNamesWhatItWouldDeleteAndDeletesNothing(t *testing.T) {
 
 func TestASnapshotTaggedAlsoAsAReleaseIsKept(t *testing.T) {
 	versions := mockVersions()
-	versions[0].tags = append(versions[0].tags, "0.0.1")
+	versions[0].tags = append(versions[0].tags, "v0.0.1")
 	github := newMockGitHub(t, versions)
 	if _, err := github.run("--owner", "mock-account", "--package", "mock-exporter", "--max-age-days", "14"); err != nil || len(github.deleted) != 0 {
 		t.Errorf("deleted %v (%v)", github.deleted, err)

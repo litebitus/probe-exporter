@@ -9,7 +9,7 @@ import (
 	"time"
 )
 
-// snapshotTagMarker marks a snapshot's tag, such as `0.0.1-snapshot.20261111175512`.
+// snapshotTagMarker marks a snapshot's tag, such as `v0.0.1-snapshot.20261111175512`.
 const snapshotTagMarker = "-snapshot."
 
 // packageVersion is one version of a container package: an image index or a platform image, its digest, its tags and when it was published.

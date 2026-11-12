@@ -41,7 +41,7 @@ kos:
       - linux/amd64
       - linux/arm64
     tags:
-      - "{{ .Version }}"
+      - "{{ .Tag }}"
     annotations:
       org.opencontainers.image.source: https://github.com/litebitus/probe-exporter
     bare: true

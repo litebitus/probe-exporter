@@ -133,7 +133,7 @@ jobs:
             echo "|---|---|"
           } >> "$GITHUB_STEP_SUMMARY"
           for registry in ghcr.io quay.io; do
-            image="${registry}/${GITHUB_REPOSITORY}:${VERSION#v}"
+            image="${registry}/${GITHUB_REPOSITORY}:${VERSION}"
             digest="$(docker buildx imagetools inspect "$image" --format '{{json .Manifest}}' | jq -r .digest)"
             echo "| \`$image\` | \`$digest\` |" >> "$GITHUB_STEP_SUMMARY"
           done
