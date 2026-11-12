@@ -41,6 +41,10 @@ probers:
     interval: 1m
     timeout: 3s
 probe_targets:
+  mock-api:
+    addresses: [mock-api.example]
+    probers:
+      certificate: {}
   mock-cdn:
     addresses: [192.0.2.10, 192.0.2.11]
     probers:
@@ -120,7 +124,7 @@ func reportsProblem(err error, messageStart, location string) bool {
 
 func TestAConfigurationParsesIntoItsProbersAndTargets(t *testing.T) {
 	configuration := parsed(t, mockConfiguration)
-	if configuration.Version != "1.0" || len(configuration.Probers) != 6 || len(configuration.ProbeTargets) != 5 {
+	if configuration.Version != "1.0" || len(configuration.Probers) != 6 || len(configuration.ProbeTargets) != 6 {
 		t.Fatalf("configuration = %+v", configuration)
 	}
 	cdn := configuration.ProbeTargets["mock-cdn"]
@@ -164,13 +168,14 @@ func TestAMinorStatedReadsAsItselfAndAMajorAsItsNewestMinor(t *testing.T) {
 	}
 }
 
-// A target is checked by each of its probers: at every address, on every port, for every host it serves and every record type where the prober takes them; a domain is checked as itself.
+// A target is checked by each of its probers: at every address, on every port, for every host it serves and every record type where the prober takes them; a target that serves no other hosts is checked at each address as its own host, and a domain is checked as itself.
 func TestEachProberChecksEachAddressPortHostAndRecordTypeItTakes(t *testing.T) {
 	var got []string
 	for _, run := range parsed(t, mockConfiguration).Runs() {
 		got = append(got, strings.Join([]string{run.ProbeTarget, run.Prober, run.Address, run.Port.String(), run.Host, run.RecordType}, "|"))
 	}
 	want := []string{
+		"mock-api|certificate|mock-api.example|443/tcp|mock-api.example|",
 		"mock-cdn|certificate|192.0.2.10|443/tcp|mock-a.example|",
 		"mock-cdn|certificate|192.0.2.10|443/tcp|mock-b.example|",
 		"mock-cdn|certificate|192.0.2.10|8443/tcp|mock-a.example|",
@@ -220,7 +225,7 @@ func TestEveryUnusableValueIsReportedWhereItIs(t *testing.T) {
 		"a ping that is no echo":                   {"ports: [8/icmp]", "ports: [0/icmp]", "`ports[0]`", "0/icmp"},
 		"registration over whois":                  {"ports: [443/rdap]", "ports: [43/whois]", "`ports[0]`", "43/whois"},
 		"unknown record type":                      {"record_types: [A, AAAA]", "record_types: [A, MOCK]", "`record_types[1]` must be one of", "MOCK"},
-		"no serves":                                {"    serves: [mock-a.example, mock-b.example]\n", "", "`serves` is required", "mock-cdn:"},
+		"a dns check without serves":               {"    serves: [mock-a.example]\n  mock-web", "  mock-web", "`serves` is required", "mock-resolver:"},
 		"addresses on a domain":                    {"      domain_registration: {}\n", "      domain_registration: {}\n    addresses: [192.0.2.10]\n", "`addresses` matches a form that is not allowed", "[192.0.2.10]\n"},
 		"no settings under probers":                {"  tcp:\n    interval: 1m\n    timeout: 3s\n", "", "`tcp` has no settings under `probers`", "tcp:\n        ports"},
 		"no ports here or under probers":           {"      tcp:\n        ports: [5432/tcp]\n", "      tcp: {}\n", "`tcp` checks `mock-database` without `ports`; state it here or under `probers`", "tcp: {}"},
@@ -292,7 +297,7 @@ func TestAFileLoadsAsItsTextParsesAndIsNamedByItsPath(t *testing.T) {
 	if err := os.WriteFile(path, []byte(mockConfiguration), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if configuration, err := LoadFile(path); err != nil || len(configuration.ProbeTargets) != 5 {
+	if configuration, err := LoadFile(path); err != nil || len(configuration.ProbeTargets) != 6 {
 		t.Errorf("configuration = %+v (%v)", configuration, err)
 	}
 	text := changed(t, "interval: 6h", "interval: 0s")

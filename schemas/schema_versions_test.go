@@ -232,7 +232,7 @@ func TestTheSchemaRefusesWhatTheExporterRefuses(t *testing.T) {
 		"unknown target prober":             {"      ping: {}\n", "      mock: {}\n"},
 		"a target's prober setting unknown": {"        timeout: 1s\n", "        mock_setting: 1\n"},
 		"a target's prober as a list":       {"      ping: {}\n", "      ping: []\n"},
-		"certificate without serves":        {"    serves: [mock-a.example]\n  mock-database:", "  mock-database:"},
+		"dns without serves":                {"    serves: [mock-a.example]\n  mock-domain.example:", "  mock-domain.example:"},
 		"ping without addresses":            {"    addresses: [192.0.2.20]\n", ""},
 		"addresses on a domain":             {"      domain_registration: {}\n", "      domain_registration: {}\n    addresses: [192.0.2.10]\n"},
 		"serves on a domain":                {"      domain_registration: {}\n", "      domain_registration: {}\n    serves: [mock-a.example]\n"},

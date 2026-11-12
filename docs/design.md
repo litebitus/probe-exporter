@@ -23,8 +23,8 @@ The configuration is one YAML file, named by `--config.file`. [`examples/probe-e
 | `probers` | prober name → its settings, which every target the prober checks takes |
 | `probe_targets` | target name → the target |
 | `probers` of a target | prober name → the settings the target overrides, `{}` where it overrides none |
-| `addresses` | where the target is reached, each a host name or an IP address without a port |
-| `serves` | the hosts the target serves, each a host name without a wildcard |
+| `addresses` | where the target is reached, each a host name without a port |
+| `serves` | the hosts the target serves, each a host name without a wildcard; without it, a `certificate` or `http` check takes each address as its host |
 
 A prober's settings and a target's override are the same settings; a target states only those it changes:
 
@@ -40,10 +40,10 @@ Each prober speaks its own protocols on its ports, and a target gives it what it
 
 | Prober | Its ports | A target gives it |
 |---|---|---|
-| `certificate` | `<port>/tcp` | `addresses`, `serves` |
+| `certificate` | `<port>/tcp` | `addresses`, and `serves` where the hosts are not the addresses |
 | `dns` | `<port>/udp`, `<port>/tcp` | `addresses`, `serves` |
 | `domain_registration` | `443/rdap`, the registry's RDAP service | its name, a domain |
-| `http` | `<port>/http`, `<port>/https` | `addresses`, `serves` |
+| `http` | `<port>/http`, `<port>/https` | `addresses`, and `serves` where the hosts are not the addresses |
 | `ping` | `8/icmp`, an echo request, its ICMP type where a port goes | `addresses` |
 | `tcp` | `<port>/tcp` | `addresses` |
 

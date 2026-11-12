@@ -33,6 +33,11 @@ probe_targets:
   example.com:
     probers:
       domain_registration: {}
+  mock-api:
+    addresses: [api.example.org]
+    probers:
+      certificate: {}
+      http: {}
   mock-cdn:
     addresses: [mock-cdn.example.net]
     probers:
@@ -57,10 +62,7 @@ probe_targets:
         timeout: 10s
     serves: [api.example.com, www.example.com]
   mock-web-servers:
-    addresses:
-      - 192.0.2.10
-      - 192.0.2.11
-      - 192.0.2.12
+    addresses: [mock-web-servers.example.net]
     probers:
       certificate:
         ports: [443/tcp, 8443/tcp]

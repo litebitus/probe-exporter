@@ -121,7 +121,7 @@
       "pattern": "^[A-Za-z0-9_]([A-Za-z0-9_-]*[A-Za-z0-9_])?(\\.[A-Za-z0-9_]([A-Za-z0-9_-]*[A-Za-z0-9_])?)*\\.?$"
     },
     "address": {
-      "description": "A host without a port, such as `www.example.com`, `192.0.2.10` or `2001:db8::1`.",
+      "description": "A host name without a port, such as `www.example.com`.",
       "type": "string",
       "pattern": "^([A-Za-z0-9_]([A-Za-z0-9_-]*[A-Za-z0-9_])?(\\.[A-Za-z0-9_]([A-Za-z0-9_-]*[A-Za-z0-9_])?)*\\.?|[0-9A-Fa-f.]*:[0-9A-Fa-f.]*:[0-9A-Fa-f:.]*(%[A-Za-z0-9_.-]+)?)$"
     },
@@ -332,7 +332,7 @@
           }
         },
         "addresses": {
-          "description": "Where the target is reached, such as `www.example.com` or `192.0.2.10`.",
+          "description": "Where the target is reached, such as `www.example.com`.",
           "type": "array",
           "minItems": 1,
           "uniqueItems": true,
@@ -341,7 +341,7 @@
           }
         },
         "serves": {
-          "description": "The hosts the target serves, such as `www.example.com`.",
+          "description": "The hosts the target serves, such as `www.example.com`; required for `dns`, and for `certificate` and `http` only where the hosts are not the addresses themselves.",
           "type": "array",
           "minItems": 1,
           "uniqueItems": true,
@@ -424,11 +424,6 @@
               }
             }
           },
-          "then": {
-            "required": [
-              "serves"
-            ]
-          },
           "else": {
             "properties": {
               "serves": {
@@ -437,6 +432,22 @@
                 }
               }
             }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "probers": {
+                "required": [
+                  "dns"
+                ]
+              }
+            }
+          },
+          "then": {
+            "required": [
+              "serves"
+            ]
           }
         }
       ]

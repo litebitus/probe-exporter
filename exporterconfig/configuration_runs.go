@@ -15,7 +15,7 @@ type Run struct {
 	RecordType  string
 }
 
-// Runs are every check the configuration makes: the targets and each target's probers in name order, each prober at every address, on every port, for every host and record type it takes, in the order written.
+// Runs are every check the configuration makes: the targets and each target's probers in name order, each prober at every address, on every port, for every host and record type it takes, in the order written; a target without `serves` is checked for each address as its own host.
 func (configuration Configuration) Runs() []Run {
 	var runs []Run
 	for _, targetName := range slices.Sorted(maps.Keys(configuration.ProbeTargets)) {
@@ -28,7 +28,7 @@ func (configuration Configuration) Runs() []Run {
 			}
 			for _, address := range addresses {
 				for _, port := range settings.Ports {
-					for _, host := range hostsOf(proberName, target) {
+					for _, host := range hostsOf(proberName, target, address) {
 						for _, recordType := range recordTypesOf(proberName, settings) {
 							runs = append(runs, Run{
 								ProbeTarget: targetName, Prober: proberName, Address: address, Port: port, Host: host, RecordType: recordType,
@@ -42,9 +42,15 @@ func (configuration Configuration) Runs() []Run {
 	return runs
 }
 
-func hostsOf(proberName string, target ProbeTarget) []string {
+// hostsOf are the hosts a prober checks a target for at an address: the hosts it serves, or for a `certificate` or `http` check of a target that states none, the address itself.
+func hostsOf(proberName string, target ProbeTarget, address string) []string {
 	switch proberName {
-	case CertificateProber, DNSProber, HTTPProber:
+	case CertificateProber, HTTPProber:
+		if len(target.Serves) == 0 {
+			return []string{address}
+		}
+		return target.Serves
+	case DNSProber:
 		return target.Serves
 	}
 	return []string{""}
