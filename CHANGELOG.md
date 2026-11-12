@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## v0.1.0 — 2026-11-12
+
 - Exporter
   - Probes the targets its configuration lists, each with its probers, on its own schedule, and serves each check's latest result.
   - Labels every series with its `probe_target`, `prober`, `address`, and its `port`, `host` and `record_type` where the prober takes them.
