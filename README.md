@@ -47,6 +47,7 @@ Go builds and tests the repo.
 |---|---|
 | `make build` | runs the tests, then builds the exporter into `bin/` |
 | `make test` | `go vet`, a `gofmt` check, the Go tests with the race detector, the integration tests, and a check that the tests cover at least 95% of the code |
+
 The integration tests run the exporter from a configuration file over HTTP, against local TLS listeners and RDAP registries, reloading it as `SIGHUP` does.
 
 ### Releases
