@@ -15,6 +15,7 @@ probers:
     interval: 6h
     timeout: 10s
     ports: [443/rdap]
+    info_labels: [registrar, name_servers]
   http:
     interval: 1m
     timeout: 10s

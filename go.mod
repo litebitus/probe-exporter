@@ -4,7 +4,7 @@ go 1.27.3
 
 require (
 	github.com/alecthomas/kingpin/v2 v2.4.0
-	github.com/litebitus/yaml-dsl-spec/go v0.3.0
+	github.com/litebitus/yaml-dsl-spec/go v0.3.1
 	github.com/miekg/dns v1.1.73
 	github.com/prometheus/blackbox_exporter v0.29.1
 	github.com/prometheus/client_golang v1.25.0

@@ -13,6 +13,9 @@ import (
 
 	"github.com/santhosh-tekuri/jsonschema/v6"
 	"go.yaml.in/yaml/v3"
+
+	"github.com/litebitus/probe-exporter/proberesults"
+	"github.com/litebitus/probe-exporter/rdapprober"
 )
 
 func TestAConfigurationStatesAMajorOrAMinor(t *testing.T) {
@@ -157,6 +160,7 @@ probers:
     interval: 6h
     timeout: 10s
     ports: [443/rdap]
+    info_labels: [registrar, name_servers]
   http:
     interval: 1m
     timeout: 5s
@@ -198,6 +202,60 @@ probe_targets:
       domain_registration: {}
 `
 
+// infoLabelsBySettings are the info labels the newest schema offers, each a described constant, by the settings definition that offers them.
+func infoLabelsBySettings(t *testing.T) map[string][]string {
+	t.Helper()
+	newest := minorSchemas[len(minorSchemas)-1]
+	text, _ := schemaFiles.ReadFile(newest.fileName)
+	var read struct {
+		Definitions map[string]struct {
+			Properties struct {
+				InfoLabels struct {
+					Items struct {
+						OneOf []struct {
+							Const       string `json:"const"`
+							Description string `json:"description"`
+						} `json:"oneOf"`
+					} `json:"items"`
+				} `json:"info_labels"`
+			} `json:"properties"`
+		} `json:"$defs"`
+	}
+	if err := json.Unmarshal(text, &read); err != nil {
+		t.Fatal(err)
+	}
+	offered := map[string][]string{}
+	for name, definition := range read.Definitions {
+		for _, label := range definition.Properties.InfoLabels.Items.OneOf {
+			if label.Description == "" {
+				t.Errorf("%s offers the info label %s without a description", name, label.Const)
+			}
+			offered[name] = append(offered[name], label.Const)
+		}
+	}
+	return offered
+}
+
+// The schema offers each prober exactly the info labels the prober can publish.
+func TestTheSchemaOffersTheInfoLabelsEachProberPublishes(t *testing.T) {
+	want := map[string][]string{"domain_registration_settings": rdapprober.InfoLabels}
+	if got := infoLabelsBySettings(t); !maps.EqualFunc(got, want, slices.Equal) {
+		t.Errorf("the schema offers %v, the probers publish %v", got, want)
+	}
+}
+
+// An info label never takes the name of a label every series already carries: the exporter's identity labels, or the labels a scrape adds.
+func TestNoInfoLabelTakesTheNameOfALabelEverySeriesCarries(t *testing.T) {
+	taken := append([]string{"instance", "job"}, proberesults.IdentityLabels...)
+	for settings, labels := range infoLabelsBySettings(t) {
+		for _, label := range labels {
+			if slices.Contains(taken, label) {
+				t.Errorf("%s offers the info label %s, which every series carries already", settings, label)
+			}
+		}
+	}
+}
+
 // The schema refuses what the exporter refuses that a schema can state.
 func TestTheSchemaRefusesWhatTheExporterRefuses(t *testing.T) {
 	schema := newestSchema(t)
@@ -223,6 +281,9 @@ func TestTheSchemaRefusesWhatTheExporterRefuses(t *testing.T) {
 		"a ping that is no echo":            {"ports: [8/icmp]", "ports: [0/icmp]"},
 		"registration over whois":           {"ports: [443/rdap]", "ports: [43/whois]"},
 		"unknown record type":               {"record_types: [A]", "record_types: [MOCK]"},
+		"unknown info label":                {"info_labels: [registrar, name_servers]", "info_labels: [registrar, mock_label]"},
+		"repeated info label":               {"info_labels: [registrar, name_servers]", "info_labels: [registrar, registrar]"},
+		"info labels on a prober with none": {"    ports: [8/icmp]\n", "    ports: [8/icmp]\n    info_labels: [registrar]\n"},
 		"path without a slash":              {"path: /healthz", "path: healthz"},
 		"status code too high":              {"status_codes: [200]", "status_codes: [600]"},
 		"no targets":                        {"probe_targets:\n", "probe_targets: {}\nmock_targets:\n"},

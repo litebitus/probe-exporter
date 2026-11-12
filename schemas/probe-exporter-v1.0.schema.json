@@ -220,6 +220,23 @@
           "items": {
             "const": "443/rdap"
           }
+        },
+        "info_labels": {
+          "description": "The facts of the registration the prober publishes, each a label of `probe_domain_registration_info`; none where left out.",
+          "type": "array",
+          "uniqueItems": true,
+          "items": {
+            "oneOf": [
+              {
+                "const": "name_servers",
+                "description": "The domain's name servers, lower case, in name order and joined by `, `."
+              },
+              {
+                "const": "registrar",
+                "description": "The name of the domain's registrar."
+              }
+            ]
+          }
         }
       }
     },

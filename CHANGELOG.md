@@ -16,5 +16,6 @@
 - Probers
   - `certificate`, `dns`, `http`, `ping` and `tcp`, carried out by blackbox_exporter's probers.
   - `domain_registration`: a domain's registration expiry, read from its registry over RDAP.
+  - `info_labels`: the optional facts a prober publishes on its info series, `probe_<prober>_info`; `domain_registration` offers `registrar` and `name_servers`.
 - Distribution
   - The container image is published to `ghcr.io` and `quay.io`.

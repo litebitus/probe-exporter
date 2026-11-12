@@ -71,6 +71,22 @@ func TestEachSeriesCarriesItsRunsPlace(t *testing.T) {
 	}
 }
 
+// A run with every part of a place carries exactly the identity labels, so the list other packages hold info labels against is the one the store sets.
+func TestTheIdentityLabelsAreTheLabelsTheStoreSets(t *testing.T) {
+	store := NewResultStore()
+	lookup := mockResult("mock-a.example", "192.0.2.53", true, mockFamily("mock_value", 8))
+	lookup.Identity.Target.RecordType = "AAAA"
+	store.Keep(lookup)
+	families, _ := store.Gather()
+	var set []string
+	for _, label := range families[0].Metric[0].Label {
+		set = append(set, label.GetName())
+	}
+	if strings.Join(set, ",") != strings.Join(IdentityLabels, ",") {
+		t.Errorf("the store sets %v, the identity labels are %v", set, IdentityLabels)
+	}
+}
+
 func TestGatheringLeavesTheHeldResultsAsTheyAre(t *testing.T) {
 	store := NewResultStore()
 	family := mockFamily("mock_value", 7)

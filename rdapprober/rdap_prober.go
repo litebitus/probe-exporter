@@ -3,10 +3,12 @@ package rdapprober
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
 	"net/url"
+	"slices"
 	"strings"
 	"time"
 
@@ -17,15 +19,27 @@ import (
 
 const answerSizeLimit = 1 << 20
 
-// RDAPProber reads a domain's registration from its registry.
+// infoSeriesProber names the prober in its info series, `probe_domain_registration_info`.
+const infoSeriesProber = "domain_registration"
+
+// InfoLabels are the facts of a registration the prober can publish, each a label of its info series.
+var InfoLabels = []string{"name_servers", "registrar"}
+
+// RDAPProber reads a domain's registration from its registry, publishing the info labels chosen for it.
 type RDAPProber struct {
-	bootstrap *Bootstrap
-	client    *http.Client
+	bootstrap  *Bootstrap
+	client     *http.Client
+	infoLabels []string
 }
 
-// NewRDAPProber is the prober finding registries through a bootstrap and asking them with an HTTP client.
-func NewRDAPProber(bootstrap *Bootstrap, client *http.Client) RDAPProber {
-	return RDAPProber{bootstrap: bootstrap, client: client}
+// NewRDAPProber is the prober finding registries through a bootstrap and asking them with an HTTP client, publishing the info labels given; a label that is not one of InfoLabels is refused.
+func NewRDAPProber(bootstrap *Bootstrap, client *http.Client, infoLabels []string) (RDAPProber, error) {
+	for _, label := range infoLabels {
+		if !slices.Contains(InfoLabels, label) {
+			return RDAPProber{}, fmt.Errorf("the `%s` prober has no info label `%s`", infoSeriesProber, label)
+		}
+	}
+	return RDAPProber{bootstrap: bootstrap, client: client, infoLabels: infoLabels}, nil
 }
 
 type domainAnswer struct {
@@ -33,6 +47,44 @@ type domainAnswer struct {
 		EventAction string `json:"eventAction"`
 		EventDate   string `json:"eventDate"`
 	} `json:"events"`
+	Entities []struct {
+		Roles      []string          `json:"roles"`
+		VCardArray []json.RawMessage `json:"vcardArray"`
+	} `json:"entities"`
+	Nameservers []struct {
+		LDHName string `json:"ldhName"`
+	} `json:"nameservers"`
+}
+
+// registrarName is the formatted name of the entity whose role is `registrar`, from its jCard (RFC 7095); empty where the answer names none.
+func (answer domainAnswer) registrarName() string {
+	for _, entity := range answer.Entities {
+		if !slices.Contains(entity.Roles, "registrar") || len(entity.VCardArray) < 2 {
+			continue
+		}
+		var properties [][]any
+		if json.Unmarshal(entity.VCardArray[1], &properties) != nil {
+			continue
+		}
+		for _, property := range properties {
+			if len(property) >= 4 && property[0] == "fn" {
+				if name, isText := property[3].(string); isText {
+					return name
+				}
+			}
+		}
+	}
+	return ""
+}
+
+// nameServers are the domain's name servers, lower case and in name order, joined by `, `; empty where the answer names none.
+func (answer domainAnswer) nameServers() string {
+	var names []string
+	for _, nameServer := range answer.Nameservers {
+		names = append(names, strings.TrimSuffix(strings.ToLower(nameServer.LDHName), "."))
+	}
+	slices.Sort(names)
+	return strings.Join(names, ", ")
 }
 
 // Probe asks the target domain's registry for its registration, and succeeds when the answer states when the registration expires.
@@ -69,6 +121,10 @@ func (rdapProber RDAPProber) Probe(ctx context.Context, target probeschedule.Tar
 		logger.Error("failed to read the registry's answer", "url", domainURL, "err", err)
 		return false
 	}
+	probeschedule.PublishInfo(registry, infoSeriesProber, map[string]string{
+		"name_servers": answer.nameServers(),
+		"registrar":    answer.registrarName(),
+	}, rdapProber.infoLabels)
 	for _, event := range answer.Events {
 		if event.EventAction != "expiration" {
 			continue

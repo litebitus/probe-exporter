@@ -12,17 +12,18 @@ import (
 
 // proberSet makes the prober each target is checked by, `domain_registration` from one shared RDAP bootstrap and every other from blackbox_exporter's probers.
 type proberSet struct {
-	rdapProber             rdapprober.RDAPProber
+	rdapBootstrap          *rdapprober.Bootstrap
+	rdapClient             *http.Client
 	trustedAuthoritiesFile string
 }
 
 func newProberSet(bootstrap *rdapprober.Bootstrap, client *http.Client, trustedAuthoritiesFile string) *proberSet {
-	return &proberSet{rdapProber: rdapprober.NewRDAPProber(bootstrap, client), trustedAuthoritiesFile: trustedAuthoritiesFile}
+	return &proberSet{rdapBootstrap: bootstrap, rdapClient: client, trustedAuthoritiesFile: trustedAuthoritiesFile}
 }
 
 func (probers *proberSet) prober(proberName string, settings exporterconfig.CheckSettings) (probeschedule.Prober, error) {
 	if proberName == exporterconfig.DomainRegistrationProber {
-		return probers.rdapProber, nil
+		return rdapprober.NewRDAPProber(probers.rdapBootstrap, probers.rdapClient, settings.InfoLabels)
 	}
 	return blackboxprobers.NewBlackboxProber(proberName, settings, probers.trustedAuthoritiesFile)
 }

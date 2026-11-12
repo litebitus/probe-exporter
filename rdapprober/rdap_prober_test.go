@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"maps"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -95,11 +96,17 @@ func probeDomain(t *testing.T, prober RDAPProber, domain string) probeOutcome {
 	return probeOutcome{success: success, series: series, log: log.String()}
 }
 
-func mockProber(t *testing.T, answers map[string]mockAnswer) (RDAPProber, *mockRegistry) {
+// mockProber is a prober asking a mock registry holding the answers, publishing the info labels given.
+func mockProber(t *testing.T, answers map[string]mockAnswer, infoLabels ...string) (RDAPProber, *mockRegistry) {
+	t.Helper()
 	registry := newMockRegistry(t, answers)
 	bootstrapServer, _ := mockBootstrap(t, bootstrapNaming(registry.server.URL))
 	client := registry.server.Client()
-	return NewRDAPProber(NewBootstrap(bootstrapServer.URL, client), client), registry
+	prober, err := NewRDAPProber(NewBootstrap(bootstrapServer.URL, client), client, infoLabels)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return prober, registry
 }
 
 func TestARegisteredDomainAnswersWhenItsRegistrationExpires(t *testing.T) {
@@ -114,6 +121,64 @@ func TestARegisteredDomainAnswersWhenItsRegistrationExpires(t *testing.T) {
 	}
 	if accept := registry.accept.Load(); accept != "application/rdap+json" {
 		t.Errorf("Accept = %v", accept)
+	}
+}
+
+// The info series, valued 1, carries each chosen label: the registrar the answer names, and the domain's name servers, lower case and in name order, each empty where the answer names none. With no label chosen there is no info series, and the expiry never carries a label of its own.
+func TestTheInfoSeriesCarriesTheInfoLabelsChosen(t *testing.T) {
+	answers := map[string]mockAnswer{
+		"mock-domain.example": {http.StatusOK, `{"objectClassName":"domain","ldhName":"mock-domain.example",` +
+			`"events":[{"eventAction":"expiration","eventDate":"2027-08-20T04:00:00Z"}],` +
+			`"entities":[` +
+			`{"objectClassName":"entity","roles":["technical"],"vcardArray":["vcard",[["version",{},"text","4.0"],["fn",{},"text","Mock Technical"]]]},` +
+			`{"objectClassName":"entity","roles":["registrar"],"vcardArray":["vcard",[["version",{},"text","4.0"],["fn",{},"text","Mock Registrar, Inc."]]]}],` +
+			`"nameservers":[{"objectClassName":"nameserver","ldhName":"NS-2.MOCK-DNS.EXAMPLE."},{"objectClassName":"nameserver","ldhName":"ns-1.mock-dns.example"}]}`},
+		"mock-bare.example": {http.StatusOK, domainObject("mock-bare.example", "2027-08-20T04:00:00Z")},
+	}
+	for name, testCase := range map[string]struct {
+		domain     string
+		infoLabels []string
+		want       map[string]string
+	}{
+		"both labels": {"mock-domain.example", []string{"registrar", "name_servers"},
+			map[string]string{"registrar": "Mock Registrar, Inc.", "name_servers": "ns-1.mock-dns.example, ns-2.mock-dns.example"}},
+		"one label":             {"mock-domain.example", []string{"registrar"}, map[string]string{"registrar": "Mock Registrar, Inc."}},
+		"an answer naming none": {"mock-bare.example", []string{"registrar", "name_servers"}, map[string]string{"registrar": "", "name_servers": ""}},
+		"no label chosen":       {"mock-domain.example", nil, nil},
+	} {
+		prober, _ := mockProber(t, answers, testCase.infoLabels...)
+		registry := prometheus.NewRegistry()
+		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+		succeeded := prober.Probe(ctx, probeschedule.Target{Address: testCase.domain}, registry, slog.New(slog.NewTextHandler(io.Discard, nil)))
+		cancel()
+		families, _ := registry.Gather()
+		var got map[string]string
+		for _, family := range families {
+			switch family.GetName() {
+			case "probe_domain_registration_info":
+				got = map[string]string{}
+				for _, label := range family.Metric[0].Label {
+					got[label.GetName()] = label.GetValue()
+				}
+				if value := family.Metric[0].GetGauge().GetValue(); value != 1 {
+					t.Errorf("%s: the info series is valued %v", name, value)
+				}
+			case "probe_domain_registration_expiry_timestamp_seconds":
+				if labels := family.Metric[0].Label; len(labels) != 0 {
+					t.Errorf("%s: the expiry carries labels of its own: %v", name, labels)
+				}
+			}
+		}
+		if !succeeded || !maps.Equal(got, testCase.want) {
+			t.Errorf("%s: succeeded %v, info labels %v, want %v", name, succeeded, got, testCase.want)
+		}
+	}
+}
+
+func TestAnInfoLabelTheProberLacksIsRefused(t *testing.T) {
+	_, err := NewRDAPProber(nil, nil, []string{"registrar", "mock_label"})
+	if err == nil || err.Error() != "the `domain_registration` prober has no info label `mock_label`" {
+		t.Errorf("err = %v", err)
 	}
 }
 
@@ -151,7 +216,10 @@ func TestARegistryAnswerCarriesItsStatusCodeEvenWhenItFails(t *testing.T) {
 func TestAnUnreachableRegistryFailsTheProbe(t *testing.T) {
 	registry := newMockRegistry(t, nil)
 	bootstrapServer, _ := mockBootstrap(t, bootstrapNaming("https://127.0.0.1:1"))
-	prober := NewRDAPProber(NewBootstrap(bootstrapServer.URL, registry.server.Client()), registry.server.Client())
+	prober, err := NewRDAPProber(NewBootstrap(bootstrapServer.URL, registry.server.Client()), registry.server.Client(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
 	if outcome := probeDomain(t, prober, "mock-domain.example"); outcome.success || !strings.Contains(outcome.log, "failed to ask the registry") {
 		t.Errorf("outcome = %+v", outcome)
 	}

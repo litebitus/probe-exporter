@@ -86,6 +86,9 @@ func (store *ResultStore) Gather() ([]*dto.MetricFamily, error) {
 	}), nil
 }
 
+// IdentityLabels are the labels a result's series carry to name its run's place; no prober's info label takes one of their names.
+var IdentityLabels = []string{"address", "host", "port", "probe_target", "prober", "record_type"}
+
 func resultLabels(result probeschedule.Result) []*dto.LabelPair {
 	values := map[string]string{
 		"probe_target": result.Identity.ProbeTarget,

@@ -13,6 +13,7 @@ An OpenMetrics exporter that owns its targets: its configuration names what is p
 - Every series carries its `probe_target`, `prober`, `address`, and its `port`, `host` and `record_type` where the prober takes them.
 - blackbox_exporter's probers carry out most checks, imported as a library and run unchanged.
 - `domain_registration` reads a domain's registration expiry from its registry over RDAP.
+- A prober's optional facts, such as a domain's registrar, are published on an info series only where `info_labels` chooses them.
 - The configuration is checked against its version's JSON Schema, in the editor as in the exporter, each problem reported at its line and column.
 - `/results` shows each check's latest result with its log, so why a check failed stays readable.
 

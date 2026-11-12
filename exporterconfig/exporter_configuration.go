@@ -43,6 +43,7 @@ type ProberSettings struct {
 	Path        string         `yaml:"path"`
 	StatusCodes []int          `yaml:"status_codes"`
 	RecordTypes []string       `yaml:"record_types"`
+	InfoLabels  []string       `yaml:"info_labels"`
 }
 
 // ProbeTarget is what is probed: where it is reached, the hosts it serves, and the probers that check it with the settings it overrides.
@@ -81,6 +82,7 @@ type CheckSettings struct {
 	Path        string
 	StatusCodes []int
 	RecordTypes []string
+	InfoLabels  []string
 }
 
 // CheckSettings are the settings a prober checks a target with.
@@ -96,6 +98,7 @@ func resolved(prober, target ProberSettings) CheckSettings {
 		Path:        cmp.Or(target.Path, prober.Path),
 		StatusCodes: writtenOr(target.StatusCodes, prober.StatusCodes),
 		RecordTypes: writtenOr(target.RecordTypes, prober.RecordTypes),
+		InfoLabels:  writtenOr(target.InfoLabels, prober.InfoLabels),
 	}
 }
 

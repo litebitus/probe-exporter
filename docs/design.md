@@ -35,6 +35,7 @@ A prober's settings and a target's override are the same settings; a target stat
 | `ports` | the ports checked, each a port and the protocol spoken on it, such as `443/tcp` | every prober |
 | `path`, `status_codes` | the path requested, and the status codes that answer it successfully | `http` |
 | `record_types` | the record types asked for each host, such as `A` | `dns` |
+| `info_labels` | the optional facts the prober publishes about what it checked, each a label of its info series; optional, none where left out | each prober that has info labels |
 
 Each prober speaks its own protocols on its ports, and a target gives it what it checks:
 
@@ -117,6 +118,11 @@ Each result also has:
 
 A prober carried out by blackbox_exporter serves its series as blackbox names them.
 
+A check that chooses `info_labels` also has an info series, `probe_<prober>_info`, valued `1` and labeled with the fact of each label chosen. A check that chooses none has no info series, so a fact that changes never changes another series' identity.
+
+- Each prober defines its own info labels; the schema offers a prober exactly those.
+- An info label never takes the name of a label every series carries: the labels above, or `job` and `instance`, which a scrape adds.
+
 ## Serving
 
 | Path | Answers |
@@ -164,6 +170,13 @@ The `domain_registration` prober reads a domain's registration from its registry
 |---|---|
 | `probe_domain_registration_expiry_timestamp_seconds` | when the domain's registration expires, from the `expiration` event |
 | `probe_http_status_code` | the registry's answer |
+
+| Info label | Fact |
+|---|---|
+| `name_servers` | the domain's name servers, lower case, in name order and joined by `, ` |
+| `registrar` | the formatted name of the entity whose role is `registrar` |
+
+A fact the registry's answer does not name is an empty label.
 
 A failed run logs why: no registry for the domain's top-level domain, the registry's answer, or an answer without an `expiration` event.
 

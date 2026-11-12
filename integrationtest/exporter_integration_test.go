@@ -131,7 +131,9 @@ func startMockEdge(t *testing.T) mockEdge {
 			http.NotFound(writer, request)
 			return
 		}
-		io.WriteString(writer, `{"objectClassName":"domain","events":[{"eventAction":"expiration","eventDate":"2027-08-20T04:00:00Z"}]}`)
+		io.WriteString(writer, `{"objectClassName":"domain","events":[{"eventAction":"expiration","eventDate":"2027-08-20T04:00:00Z"}],`+
+			`"entities":[{"objectClassName":"entity","roles":["registrar"],"vcardArray":["vcard",[["fn",{},"text","Mock Registrar"]]]}],`+
+			`"nameservers":[{"objectClassName":"nameserver","ldhName":"ns-1.mock-dns.example"}]}`)
 	}))
 	t.Cleanup(registry.Close)
 	bootstrap := httptest.NewTLSServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
@@ -160,6 +162,7 @@ probers:
     interval: 500ms
     timeout: 500ms
     ports: [443/rdap]
+    info_labels: [registrar, name_servers]
   http:
     interval: 500ms
     timeout: 500ms
@@ -202,6 +205,7 @@ func TestTheExporterServesEachConfiguredTargetsResult(t *testing.T) {
 		`probe_http_status_code{` + place("http", "https") + `} 200`,
 		`probe_success{address="127.0.0.1",port="` + edge.port + `/tcp",probe_target="mock-cdn",prober="tcp"} 1`,
 		`probe_domain_registration_expiry_timestamp_seconds{address="mock-domain.example",port="443/rdap",probe_target="mock-domain.example",prober="domain_registration"} 1.8187344e+09`,
+		`probe_domain_registration_info{address="mock-domain.example",name_servers="ns-1.mock-dns.example",port="443/rdap",probe_target="mock-domain.example",prober="domain_registration",registrar="Mock Registrar"} 1`,
 		`probe_success{address="mock-missing.example",port="443/rdap",probe_target="mock-missing.example",prober="domain_registration"} 0`,
 		`probe_exporter_config_last_reload_successful 1`,
 	}

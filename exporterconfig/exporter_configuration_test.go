@@ -27,6 +27,7 @@ probers:
     interval: 6h
     timeout: 10s
     ports: [443/rdap]
+    info_labels: [registrar, name_servers]
   http:
     interval: 1m
     timeout: 5s
@@ -142,7 +143,7 @@ func TestATargetOverridesTheProbersSettingsItStates(t *testing.T) {
 		want           CheckSettings
 	}{
 		"the prober's own": {"mock-domain.example", "domain_registration", CheckSettings{
-			Interval: 6 * time.Hour, Timeout: 10 * time.Second, Ports: []Port{{443, "rdap"}},
+			Interval: 6 * time.Hour, Timeout: 10 * time.Second, Ports: []Port{{443, "rdap"}}, InfoLabels: []string{"registrar", "name_servers"},
 		}},
 		"ports overridden": {"mock-cdn", "certificate", CheckSettings{
 			Interval: 5 * time.Minute, Timeout: 5 * time.Second, Ports: []Port{{443, "tcp"}, {8443, "tcp"}},
@@ -156,6 +157,17 @@ func TestATargetOverridesTheProbersSettingsItStates(t *testing.T) {
 	} {
 		if got := configuration.CheckSettings(testCase.target, testCase.prober); !reflect.DeepEqual(got, testCase.want) {
 			t.Errorf("%s: settings = %+v, want %+v", name, got, testCase.want)
+		}
+	}
+}
+
+// A target chooses its own info labels in place of the prober's, and an empty list chooses none.
+func TestATargetChoosesItsOwnInfoLabels(t *testing.T) {
+	for written, want := range map[string][]string{"[registrar]": {"registrar"}, "[]": {}} {
+		text := changed(t, "      domain_registration: {}\n", "      domain_registration:\n        info_labels: "+written+"\n")
+		got := parsed(t, text).CheckSettings("mock-domain.example", "domain_registration").InfoLabels
+		if got == nil || !reflect.DeepEqual(got, want) {
+			t.Errorf("info_labels %s: the check publishes %v, want %v", written, got, want)
 		}
 	}
 }
@@ -225,6 +237,8 @@ func TestEveryUnusableValueIsReportedWhereItIs(t *testing.T) {
 		"a ping that is no echo":                   {"ports: [8/icmp]", "ports: [0/icmp]", "`ports[0]`", "0/icmp"},
 		"registration over whois":                  {"ports: [443/rdap]", "ports: [43/whois]", "`ports[0]`", "43/whois"},
 		"unknown record type":                      {"record_types: [A, AAAA]", "record_types: [A, MOCK]", "`record_types[1]` must be one of", "MOCK"},
+		"unknown info label":                       {"info_labels: [registrar, name_servers]", "info_labels: [registrar, mock_label]", "`info_labels[1]` must be one of `\"name_servers\"`, `\"registrar\"`", "mock_label"},
+		"info labels on a prober with none":        {"    ports: [8/icmp]\n", "    ports: [8/icmp]\n    info_labels: [registrar]\n", "`info_labels` is not defined in the schema", "info_labels: [registrar]\n"},
 		"a dns check without serves":               {"    serves: [mock-a.example]\n  mock-web", "  mock-web", "`serves` is required", "mock-resolver:"},
 		"addresses on a domain":                    {"      domain_registration: {}\n", "      domain_registration: {}\n    addresses: [192.0.2.10]\n", "`addresses` matches a form that is not allowed", "[192.0.2.10]\n"},
 		"no settings under probers":                {"  tcp:\n    interval: 1m\n    timeout: 3s\n", "", "`tcp` has no settings under `probers`", "tcp:\n        ports"},
