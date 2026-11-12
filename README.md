@@ -77,3 +77,5 @@ The integration tests run the exporter from a configuration file over HTTP, agai
 The `Release` workflow, dispatched by hand, runs the tests, computes the next version, stamps `CHANGELOG.md` and `schemas/CHANGELOG.md`, tags it, and publishes the archives, the container image and the schemas.
 
 The `Snapshot` workflow, dispatched by hand, publishes a pre-release such as `v0.0.1-snapshot.20261111175512`, with its image.
+
+The `Prune snapshot images` workflow runs daily and deletes every snapshot image older than two weeks, with the platform images only it uses; a release's image is never deleted. Dispatched by hand, it names what it would delete unless `dry_run` is turned off.

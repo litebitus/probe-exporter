@@ -1,0 +1,40 @@
+name: Prune snapshot images
+
+on:
+  schedule:
+    - cron: "17 3 * * *"
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: "Name the images it would delete without deleting any."
+        required: true
+        type: boolean
+        default: true
+
+permissions:
+  contents: read
+  packages: write
+
+concurrency:
+  group: prune-snapshot-images
+  cancel-in-progress: false
+
+jobs:
+  prune:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7.0.1
+
+      - name: Set up Go
+        uses: actions/setup-go@v7.0.0
+        with:
+          go-version-file: go.mod
+
+      - name: Prune snapshot images older than two weeks
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          OWNER: ${{ github.repository_owner }}
+          DRY_RUN: ${{ inputs.dry_run || false }}
+        run: go run ./internal/snapshotpruner --owner "$OWNER" --package probe-exporter --max-age-days 14 --dry-run="$DRY_RUN"
