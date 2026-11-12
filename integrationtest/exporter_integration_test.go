@@ -3,6 +3,7 @@ package integrationtest
 
 import (
 	"context"
+	"encoding/pem"
 	"fmt"
 	"io"
 	"net"
@@ -18,12 +19,14 @@ import (
 	"github.com/litebitus/probe-exporter/exporterapp"
 )
 
+// trustedHost is a name the mock listener's certificate is issued for.
+const trustedHost = "example.com"
+
 // runningExporter is the exporter running with a configuration file, until the test ends.
 type runningExporter struct {
 	baseURL           string
 	configurationFile string
 	reloadSignals     chan os.Signal
-	output            *strings.Builder
 }
 
 func freeAddress(t *testing.T) string {
@@ -36,12 +39,11 @@ func freeAddress(t *testing.T) string {
 	return listener.Addr().String()
 }
 
-func startExporter(t *testing.T, configuration string, client *http.Client, bootstrapURL string) *runningExporter {
+func startExporter(t *testing.T, edge mockEdge, configuration string) *runningExporter {
 	t.Helper()
 	exporter := &runningExporter{
 		configurationFile: filepath.Join(t.TempDir(), "mock-config.yml"),
 		reloadSignals:     make(chan os.Signal, 1),
-		output:            &strings.Builder{},
 	}
 	exporter.write(t, configuration)
 	address := freeAddress(t)
@@ -51,10 +53,8 @@ func startExporter(t *testing.T, configuration string, client *http.Client, boot
 	go func() {
 		ended <- exporterapp.Run(ctx, []string{
 			"--config.file=" + exporter.configurationFile, "--web.listen-address=" + address, "--log.level=debug",
-		}, exporterapp.ProgramSettings{
-			Version: "mock-version", Output: io.Discard, ReloadSignals: exporter.reloadSignals,
-			RDAPBootstrapURL: bootstrapURL, HTTPClient: client,
-		})
+			"--probes.max-concurrent=4",
+		}, edge.programSettings(exporter.reloadSignals))
 	}()
 	t.Cleanup(func() {
 		cancel()
@@ -106,17 +106,27 @@ func waitFor(t *testing.T, condition func() bool) {
 	}
 }
 
-// mockEdge is what the exporter probes: a TLS listener, and a registry's RDAP service with its bootstrap.
+// mockEdge is what the exporter probes: an HTTPS listener with the certificate authority that issued its certificate, and a registry's RDAP service with its bootstrap.
 type mockEdge struct {
-	tlsAddress   string
-	bootstrapURL string
-	client       *http.Client
+	port                   string
+	trustedAuthoritiesFile string
+	bootstrapURL           string
+	client                 *http.Client
 }
 
 func startMockEdge(t *testing.T) mockEdge {
 	t.Helper()
-	tlsServer := httptest.NewTLSServer(http.NotFoundHandler())
-	t.Cleanup(tlsServer.Close)
+	listener := httptest.NewTLSServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		if request.URL.Path != "/mock-health" {
+			http.NotFound(writer, request)
+		}
+	}))
+	t.Cleanup(listener.Close)
+	_, port, _ := net.SplitHostPort(listener.Listener.Addr().String())
+	authorities := filepath.Join(t.TempDir(), "mock-authorities.pem")
+	if err := os.WriteFile(authorities, pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: listener.Certificate().Raw}), 0o600); err != nil {
+		t.Fatal(err)
+	}
 	registry := httptest.NewTLSServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
 		if request.URL.Path != "/rdap/domain/mock-domain.example" {
 			http.NotFound(writer, request)
@@ -129,58 +139,64 @@ func startMockEdge(t *testing.T) mockEdge {
 		fmt.Fprintf(writer, `{"services":[[["example"],["%s/rdap/"]]]}`, registry.URL)
 	}))
 	t.Cleanup(bootstrap.Close)
-	return mockEdge{tlsAddress: strings.TrimPrefix(tlsServer.URL, "https://"), bootstrapURL: bootstrap.URL, client: registry.Client()}
+	return mockEdge{port: port, trustedAuthoritiesFile: authorities, bootstrapURL: bootstrap.URL, client: registry.Client()}
 }
 
-func (edge mockEdge) configuration(tlsGroups string) string {
+func (edge mockEdge) programSettings(reloadSignals chan os.Signal) exporterapp.ProgramSettings {
+	return exporterapp.ProgramSettings{
+		Version: "mock-version", Output: io.Discard, ReloadSignals: reloadSignals,
+		RDAPBootstrapURL: edge.bootstrapURL, HTTPClient: edge.client, TrustedAuthoritiesFile: edge.trustedAuthoritiesFile,
+	}
+}
+
+// configuration checks the listener, as the target named, with the certificate, http and tcp probers, and two domains' registrations.
+func (edge mockEdge) configuration(targetName string) string {
 	return `version: "1"
-probes:
-  mock_tls:
-    prober: tcp
-    timeout: 2s
+probers:
+  certificate:
     interval: 100ms
-    tcp:
-      tls: true
-      tls_config:
-        insecure_skip_verify: true
-    target_groups:
-` + tlsGroups + `  mock_registration:
-    prober: rdap
     timeout: 2s
+    ports: [` + edge.port + `]
+  domain_registration:
     interval: 100ms
-    target_groups:
-      mock-domains:
-        targets:
-          - name: mock-domain.example
-            addresses: [mock-domain.example]
-          - name: mock-missing.example
-            addresses: [mock-missing.example]
-max_concurrent_probes: 4
+    timeout: 2s
+  http:
+    interval: 100ms
+    timeout: 2s
+    ports: [` + edge.port + `]
+    path: /mock-health
+    status_codes: [200]
+  tcp:
+    interval: 100ms
+    timeout: 2s
+    ports: [` + edge.port + `]
+probe_targets:
+  ` + targetName + `:
+    addresses: [127.0.0.1]
+    probers: [certificate, http, tcp]
+    serves: [` + trustedHost + `]
+  mock-domain.example:
+    probers: [domain_registration]
+  mock-missing.example:
+    probers: [domain_registration]
 `
 }
 
-// tlsGroup is a target group of the TLS listener, checked as each of the names given, or as one name when none is.
-func (edge mockEdge) tlsGroup(group string, names ...string) string {
-	if len(names) == 0 {
-		names = []string{"mock-listener.example"}
-	}
-	text := "      " + group + ":\n        targets:\n"
-	for _, name := range names {
-		text += "          - name: " + name + "\n            addresses: [" + edge.tlsAddress + "]\n"
-	}
-	return text + "        labels:\n          mock_site: " + group + "\n"
-}
-
-// The exporter probes every target its configuration lists, on its own schedule, and serves each result labeled with its probe.
+// The exporter checks every target its configuration lists with each of the target's probers, on its own schedule, and serves each result labeled with its place.
 func TestTheExporterServesEachConfiguredTargetsResult(t *testing.T) {
 	edge := startMockEdge(t)
-	exporter := startExporter(t, edge.configuration(edge.tlsGroup("mock-cdn", "mock-a.example", "mock-b.example")), edge.client, edge.bootstrapURL)
+	exporter := startExporter(t, edge, edge.configuration("mock-cdn"))
+	place := func(prober string) string {
+		return `address="127.0.0.1",host="` + trustedHost + `",port="` + edge.port + `",probe_target="mock-cdn",prober="` + prober + `"`
+	}
 	want := []string{
-		`probe_success{address="` + edge.tlsAddress + `",mock_site="mock-cdn",name="mock-a.example",probe="mock_tls",target_group="mock-cdn"} 1`,
-		`probe_success{address="` + edge.tlsAddress + `",mock_site="mock-cdn",name="mock-b.example",probe="mock_tls",target_group="mock-cdn"} 1`,
-		`probe_domain_registration_expiry_timestamp_seconds{address="mock-domain.example",name="mock-domain.example",probe="mock_registration",target_group="mock-domains"} 1.8187344e+09`,
-		`probe_success{address="mock-missing.example",name="mock-missing.example",probe="mock_registration",target_group="mock-domains"} 0`,
-		`probe_http_status_code{address="mock-missing.example",name="mock-missing.example",probe="mock_registration",target_group="mock-domains"} 404`,
+		`probe_success{` + place("certificate") + `} 1`,
+		`probe_ssl_earliest_cert_expiry{` + place("certificate") + `}`,
+		`probe_success{` + place("http") + `} 1`,
+		`probe_http_status_code{` + place("http") + `} 200`,
+		`probe_success{address="127.0.0.1",port="` + edge.port + `",probe_target="mock-cdn",prober="tcp"} 1`,
+		`probe_domain_registration_expiry_timestamp_seconds{address="mock-domain.example",probe_target="mock-domain.example",prober="domain_registration"} 1.8187344e+09`,
+		`probe_success{address="mock-missing.example",probe_target="mock-missing.example",prober="domain_registration"} 0`,
 		`probe_exporter_config_last_reload_successful 1`,
 	}
 	waitFor(t, func() bool {
@@ -205,7 +221,7 @@ func TestTheExporterServesEachConfiguredTargetsResult(t *testing.T) {
 
 func TestTheExporterServesOpenMetricsWhenTheScraperAsksForIt(t *testing.T) {
 	edge := startMockEdge(t)
-	exporter := startExporter(t, edge.configuration(edge.tlsGroup("mock-cdn")), edge.client, edge.bootstrapURL)
+	exporter := startExporter(t, edge, edge.configuration("mock-cdn"))
 	request, _ := http.NewRequest(http.MethodGet, exporter.baseURL+"/metrics", nil)
 	request.Header.Set("Accept", "application/openmetrics-text;version=1.0.0")
 	response, err := http.DefaultClient.Do(request)
@@ -222,41 +238,49 @@ func TestTheExporterServesOpenMetricsWhenTheScraperAsksForIt(t *testing.T) {
 // On a reload, a target no longer configured loses its result, and a new one is probed.
 func TestAReloadDropsTargetsNoLongerConfiguredAndProbesNewOnes(t *testing.T) {
 	edge := startMockEdge(t)
-	exporter := startExporter(t, edge.configuration(edge.tlsGroup("mock-old")), edge.client, edge.bootstrapURL)
-	waitFor(t, func() bool { return strings.Contains(exporter.get(t, "/metrics"), `target_group="mock-old"`) })
-	exporter.reload(t, edge.configuration(edge.tlsGroup("mock-new")))
+	exporter := startExporter(t, edge, edge.configuration("mock-old"))
+	waitFor(t, func() bool { return strings.Contains(exporter.get(t, "/metrics"), `probe_target="mock-old"`) })
+	exporter.reload(t, edge.configuration("mock-new"))
 	waitFor(t, func() bool {
 		metrics := exporter.get(t, "/metrics")
-		return strings.Contains(metrics, `target_group="mock-new"`) && !strings.Contains(metrics, `target_group="mock-old"`)
+		return strings.Contains(metrics, `probe_target="mock-new"`) && !strings.Contains(metrics, `probe_target="mock-old"`)
 	})
 }
 
 // A configuration that fails to load on a reload is refused and the running one kept.
 func TestAFailedReloadKeepsTheRunningConfiguration(t *testing.T) {
 	edge := startMockEdge(t)
-	exporter := startExporter(t, edge.configuration(edge.tlsGroup("mock-cdn")), edge.client, edge.bootstrapURL)
-	exporter.reload(t, "probes: [")
+	exporter := startExporter(t, edge, edge.configuration("mock-cdn"))
+	exporter.reload(t, "probers: [")
 	waitFor(t, func() bool {
 		return strings.Contains(exporter.get(t, "/metrics"), "probe_exporter_config_last_reload_successful 0")
 	})
 	time.Sleep(250 * time.Millisecond)
-	if !strings.Contains(exporter.get(t, "/metrics"), `target_group="mock-cdn"`) {
+	if !strings.Contains(exporter.get(t, "/metrics"), `probe_target="mock-cdn"`) {
 		t.Error("the running configuration's targets were dropped")
 	}
 }
 
 func TestTheExporterRefusesToStartWithoutAUsableConfiguration(t *testing.T) {
+	edge := startMockEdge(t)
 	path := filepath.Join(t.TempDir(), "mock-config.yml")
-	os.WriteFile(path, []byte("probes: ["), 0o600)
-	for name, arguments := range map[string][]string{
-		"no flags":            {},
-		"unusable file":       {"--config.file=" + path, "--web.listen-address=" + freeAddress(t)},
-		"missing file":        {"--config.file=" + path + ".missing", "--web.listen-address=" + freeAddress(t)},
-		"unusable web config": {"--config.file=" + path, "--web.listen-address=" + freeAddress(t), "--web.config.file=" + path},
+	os.WriteFile(path, []byte("probers: ["), 0o600)
+	usable := filepath.Join(t.TempDir(), "mock-usable-config.yml")
+	os.WriteFile(usable, []byte(edge.configuration("mock-cdn")), 0o600)
+	for name, testCase := range map[string]struct {
+		arguments []string
+		message   string
+	}{
+		"no flags":            {[]string{}, "required flag(s)"},
+		"unusable file":       {[]string{"--config.file=" + path, "--web.listen-address=" + freeAddress(t)}, "error: "},
+		"missing file":        {[]string{"--config.file=" + path + ".missing", "--web.listen-address=" + freeAddress(t)}, "failed to read the configuration file"},
+		"unusable web config": {[]string{"--config.file=" + usable, "--web.listen-address=" + freeAddress(t), "--web.config.file=" + path}, ""},
+		"no probes at once": {[]string{"--config.file=" + usable, "--web.listen-address=" + freeAddress(t), "--probes.max-concurrent=0"},
+			"--probes.max-concurrent must be at least 1, not 0"},
 	} {
-		err := exporterapp.Run(context.Background(), arguments, exporterapp.ProgramSettings{Output: io.Discard, HTTPClient: http.DefaultClient})
-		if err == nil {
-			t.Errorf("%s: the exporter started", name)
+		err := exporterapp.Run(context.Background(), testCase.arguments, edge.programSettings(nil))
+		if err == nil || !strings.Contains(err.Error(), testCase.message) {
+			t.Errorf("%s: err = %v, want %q", name, err, testCase.message)
 		}
 	}
 }
@@ -269,9 +293,9 @@ func TestTheExporterStopsWhenItCannotListen(t *testing.T) {
 	}
 	defer taken.Close()
 	path := filepath.Join(t.TempDir(), "mock-config.yml")
-	os.WriteFile(path, []byte(edge.configuration(edge.tlsGroup("mock-cdn"))), 0o600)
+	os.WriteFile(path, []byte(edge.configuration("mock-cdn")), 0o600)
 	err = exporterapp.Run(context.Background(), []string{"--config.file=" + path, "--web.listen-address=" + taken.Addr().String()},
-		exporterapp.ProgramSettings{Output: io.Discard, HTTPClient: edge.client, RDAPBootstrapURL: edge.bootstrapURL})
+		edge.programSettings(nil))
 	if err == nil || !strings.Contains(err.Error(), "address already in use") {
 		t.Errorf("err = %v", err)
 	}

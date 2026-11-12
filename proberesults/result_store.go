@@ -5,6 +5,7 @@ import (
 	"cmp"
 	"maps"
 	"slices"
+	"strconv"
 	"sync"
 
 	dto "github.com/prometheus/client_model/go"
@@ -42,21 +43,22 @@ func (store *ResultStore) Retain(identities map[probeschedule.ProbeIdentity]bool
 	}
 }
 
-// Results are the held results, ordered by probe, target group, name and address.
+// Results are the held results, ordered by probe target, prober, address, port and host.
 func (store *ResultStore) Results() []probeschedule.Result {
 	store.mutex.RLock()
 	defer store.mutex.RUnlock()
 	return slices.SortedFunc(maps.Values(store.results), func(left, right probeschedule.Result) int {
 		return cmp.Or(
-			cmp.Compare(left.Identity.Probe, right.Identity.Probe),
-			cmp.Compare(left.Identity.TargetGroup, right.Identity.TargetGroup),
-			cmp.Compare(left.Identity.Target.Name, right.Identity.Target.Name),
+			cmp.Compare(left.Identity.ProbeTarget, right.Identity.ProbeTarget),
+			cmp.Compare(left.Identity.Prober, right.Identity.Prober),
 			cmp.Compare(left.Identity.Target.Address, right.Identity.Target.Address),
+			cmp.Compare(left.Identity.Target.Port, right.Identity.Target.Port),
+			cmp.Compare(left.Identity.Target.Host, right.Identity.Target.Host),
 		)
 	})
 }
 
-// Gather answers every held result's series, each labeled with its identity labels where set, and its group's labels.
+// Gather answers every held result's series, each labeled with its identity labels where set.
 func (store *ResultStore) Gather() ([]*dto.MetricFamily, error) {
 	families := map[string]*dto.MetricFamily{}
 	for _, result := range store.Results() {
@@ -82,18 +84,18 @@ func (store *ResultStore) Gather() ([]*dto.MetricFamily, error) {
 	}), nil
 }
 
-// IdentityLabels are the labels every series of a result carries to name its run's place, which a group's labels cannot name.
-var IdentityLabels = []string{"address", "name", "probe", "target_group"}
-
 func resultLabels(result probeschedule.Result) []*dto.LabelPair {
-	values := maps.Clone(result.Labels)
-	if values == nil {
-		values = map[string]string{}
+	values := map[string]string{
+		"probe_target": result.Identity.ProbeTarget,
+		"prober":       result.Identity.Prober,
+		"address":      result.Identity.Target.Address,
 	}
-	values["probe"] = result.Identity.Probe
-	values["target_group"] = result.Identity.TargetGroup
-	values["name"] = result.Identity.Target.Name
-	values["address"] = result.Identity.Target.Address
+	if result.Identity.Target.Port != 0 {
+		values["port"] = strconv.Itoa(result.Identity.Target.Port)
+	}
+	if result.Identity.Target.Host != "" {
+		values["host"] = result.Identity.Target.Host
+	}
 	var labels []*dto.LabelPair
 	for _, name := range slices.Sorted(maps.Keys(values)) {
 		labels = append(labels, &dto.LabelPair{Name: proto.String(name), Value: proto.String(values[name])})

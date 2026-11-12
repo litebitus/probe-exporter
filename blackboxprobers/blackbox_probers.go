@@ -1,4 +1,4 @@
-// Package blackboxprobers holds blackbox_exporter's probers behind the schedule's prober interface, each with its probe's settings, running exactly as blackbox's own handler does.
+// Package blackboxprobers carries out the exporter's probers that blackbox_exporter's probers can make, each prober's settings turned into a blackbox module and each run's place into what blackbox's prober is handed, running exactly as blackbox's own handler does.
 package blackboxprobers
 
 import (
@@ -6,46 +6,98 @@ import (
 	"fmt"
 	"log/slog"
 	"maps"
+	"net"
+	"strconv"
 
 	blackboxconfig "github.com/prometheus/blackbox_exporter/config"
 	"github.com/prometheus/blackbox_exporter/prober"
 	"github.com/prometheus/client_golang/prometheus"
+	"go.yaml.in/yaml/v3"
 
+	"github.com/litebitus/probe-exporter/exporterconfig"
 	"github.com/litebitus/probe-exporter/probeschedule"
 )
 
-// ModuleProber is one blackbox prober with its settings, in blackbox's module format.
-type ModuleProber struct {
-	module blackboxconfig.Module
-	probe  prober.ProbeFn
+// standInQueryName passes blackbox's required `query_name` check; each run asks for its own host.
+const standInQueryName = "query-name.invalid"
+
+// BlackboxProber is one of the exporter's probers, with its settings, carried out by a blackbox prober.
+type BlackboxProber struct {
+	proberName string
+	module     blackboxconfig.Module
+	probe      prober.ProbeFn
+	path       string
 }
 
-// NewModuleProber is the blackbox prober a module names, with the module.
-func NewModuleProber(module blackboxconfig.Module) (ModuleProber, error) {
-	probe, known := prober.Probers[module.Prober]
-	if !known {
-		return ModuleProber{}, fmt.Errorf("blackbox_exporter has no prober `%s`", module.Prober)
+// NewBlackboxProber is the exporter's prober of a name, with its settings, its TLS checks trusting the certificate authorities in trustedAuthoritiesFile, or the system's where it is empty.
+func NewBlackboxProber(proberName string, settings exporterconfig.ProberSettings, trustedAuthoritiesFile string) (BlackboxProber, error) {
+	moduleSettings, err := blackboxModuleSettings(proberName, settings, trustedAuthoritiesFile)
+	if err != nil {
+		return BlackboxProber{}, err
 	}
-	return ModuleProber{module: module, probe: probe}, nil
+	moduleText, err := yaml.Marshal(moduleSettings)
+	if err != nil {
+		return BlackboxProber{}, err
+	}
+	var module blackboxconfig.Module
+	if err := yaml.Unmarshal(moduleText, &module); err != nil {
+		return BlackboxProber{}, fmt.Errorf("prober `%s`: %w", proberName, err)
+	}
+	return BlackboxProber{proberName: proberName, module: module, probe: prober.Probers[module.Prober], path: settings.Path}, nil
 }
 
-// Probe runs against one target's address with the module, its name sent as the `Host` header for `http`, the TLS server name for `tcp` and `grpc`, and the name asked for `dns`.
-func (moduleProber ModuleProber) Probe(ctx context.Context, target probeschedule.Target, registry *prometheus.Registry, logger *slog.Logger) bool {
-	module := moduleProber.module
-	switch module.Prober {
-	case "http":
+func blackboxModuleSettings(proberName string, settings exporterconfig.ProberSettings, trustedAuthoritiesFile string) (map[string]any, error) {
+	tlsSettings := map[string]any{}
+	if trustedAuthoritiesFile != "" {
+		tlsSettings["ca_file"] = trustedAuthoritiesFile
+	}
+	moduleSettings := map[string]any{"timeout": settings.Timeout.String()}
+	switch proberName {
+	case exporterconfig.CertificateProber:
+		moduleSettings["prober"] = "tcp"
+		moduleSettings["tcp"] = map[string]any{"preferred_ip_protocol": "ip4", "tls": true, "tls_config": tlsSettings}
+	case exporterconfig.DNSProber:
+		moduleSettings["prober"] = "dns"
+		moduleSettings["dns"] = map[string]any{"preferred_ip_protocol": "ip4", "query_name": standInQueryName, "query_type": "A"}
+	case exporterconfig.HTTPProber:
+		moduleSettings["prober"] = "http"
+		moduleSettings["http"] = map[string]any{
+			"preferred_ip_protocol": "ip4", "valid_status_codes": settings.StatusCodes, "tls_config": tlsSettings,
+		}
+	case exporterconfig.PingProber:
+		moduleSettings["prober"] = "icmp"
+		moduleSettings["icmp"] = map[string]any{"preferred_ip_protocol": "ip4"}
+	case exporterconfig.TCPProber:
+		moduleSettings["prober"] = "tcp"
+		moduleSettings["tcp"] = map[string]any{"preferred_ip_protocol": "ip4"}
+	default:
+		return nil, fmt.Errorf("blackbox_exporter carries out no prober `%s`", proberName)
+	}
+	return moduleSettings, nil
+}
+
+// Probe runs against one run's place: a certificate check asks the address and port for the host's certificate, a tcp check connects to the address and port, an http check requests the path from the address and port as the host, a dns check asks the address for the host, and a ping pings the address.
+func (blackboxProber BlackboxProber) Probe(ctx context.Context, target probeschedule.Target, registry *prometheus.Registry, logger *slog.Logger) bool {
+	module := blackboxProber.module
+	blackboxTarget := target.Address
+	hostAndPort := net.JoinHostPort(target.Address, strconv.Itoa(target.Port))
+	switch blackboxProber.proberName {
+	case exporterconfig.CertificateProber:
+		module.TCP.TLSConfig.ServerName = target.Host
+		blackboxTarget = hostAndPort
+	case exporterconfig.TCPProber:
+		blackboxTarget = hostAndPort
+	case exporterconfig.HTTPProber:
 		headers := maps.Clone(module.HTTP.Headers)
 		if headers == nil {
 			headers = map[string]string{}
 		}
-		headers["Host"] = target.Name
+		headers["Host"] = target.Host
 		module.HTTP.Headers = headers
-	case "tcp":
-		module.TCP.TLSConfig.ServerName = target.Name
-	case "grpc":
-		module.GRPC.TLSConfig.ServerName = target.Name
-	case "dns":
-		module.DNS.QueryName = target.Name
+		module.HTTP.HTTPClientConfig.TLSConfig.ServerName = target.Host
+		blackboxTarget = "https://" + hostAndPort + blackboxProber.path
+	case exporterconfig.DNSProber:
+		module.DNS.QueryName = target.Host
 	}
-	return moduleProber.probe(ctx, target.Address, module, registry, logger)
+	return blackboxProber.probe(ctx, blackboxTarget, module, registry, logger)
 }

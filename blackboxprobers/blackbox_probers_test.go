@@ -3,47 +3,93 @@ package blackboxprobers
 import (
 	"context"
 	"crypto/tls"
+	"encoding/pem"
 	"io"
 	"log/slog"
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"slices"
-	"strings"
+	"strconv"
 	"sync"
 	"testing"
 	"time"
 
 	"github.com/miekg/dns"
-	blackboxconfig "github.com/prometheus/blackbox_exporter/config"
 	"github.com/prometheus/client_golang/prometheus"
-	promconfig "github.com/prometheus/common/config"
+	dto "github.com/prometheus/client_model/go"
 
+	"github.com/litebitus/probe-exporter/exporterconfig"
 	"github.com/litebitus/probe-exporter/probeschedule"
 )
 
+// trustedHost is a name the test servers' certificate is issued for.
+const trustedHost = "example.com"
+
 func quietLogger() *slog.Logger { return slog.New(slog.NewTextHandler(io.Discard, nil)) }
 
-func probeWith(t *testing.T, module blackboxconfig.Module, target probeschedule.Target) bool {
+func mockSettings() exporterconfig.ProberSettings {
+	return exporterconfig.ProberSettings{Interval: time.Minute, Timeout: 3 * time.Second, Path: "/mock-path", StatusCodes: []int{200}}
+}
+
+func newProber(t *testing.T, proberName string, settings exporterconfig.ProberSettings, trustedAuthoritiesFile string) BlackboxProber {
 	t.Helper()
-	moduleProber, err := NewModuleProber(module)
+	blackboxProber, err := NewBlackboxProber(proberName, settings, trustedAuthoritiesFile)
 	if err != nil {
 		t.Fatal(err)
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
-	defer cancel()
-	return moduleProber.Probe(ctx, target, prometheus.NewRegistry(), quietLogger())
+	return blackboxProber
 }
 
-// serverNameRecorder is a TLS listener that records the server name each handshake sends.
+func probeWith(t *testing.T, blackboxProber BlackboxProber, target probeschedule.Target) (bool, *prometheus.Registry) {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	registry := prometheus.NewRegistry()
+	return blackboxProber.Probe(ctx, target, registry, quietLogger()), registry
+}
+
+// trustedAuthorities is a file holding the certificate a test server presents, for the TLS checks to trust.
+func trustedAuthorities(t *testing.T, server *httptest.Server) string {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "mock-authorities.pem")
+	text := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: server.Certificate().Raw})
+	if err := os.WriteFile(path, text, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	return path
+}
+
+func hostAndPort(t *testing.T, server *httptest.Server) (string, int) {
+	t.Helper()
+	host, port, err := net.SplitHostPort(server.Listener.Addr().String())
+	if err != nil {
+		t.Fatal(err)
+	}
+	portNumber, _ := strconv.Atoi(port)
+	return host, portNumber
+}
+
+// serverNameRecorder is a TLS listener that records the server name each handshake sends and the host each request names.
 type serverNameRecorder struct {
 	server *httptest.Server
 	mutex  sync.Mutex
 	names  []string
+	hosts  []string
+	paths  []string
 }
 
-func newServerNameRecorder(t *testing.T) *serverNameRecorder {
-	recorder := &serverNameRecorder{server: httptest.NewUnstartedServer(http.NotFoundHandler())}
+func newServerNameRecorder(t *testing.T, status int) *serverNameRecorder {
+	recorder := &serverNameRecorder{}
+	recorder.server = httptest.NewUnstartedServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		recorder.mutex.Lock()
+		recorder.hosts = append(recorder.hosts, request.Host)
+		recorder.paths = append(recorder.paths, request.URL.Path)
+		recorder.mutex.Unlock()
+		writer.WriteHeader(status)
+	}))
 	recorder.server.TLS = &tls.Config{GetConfigForClient: func(hello *tls.ClientHelloInfo) (*tls.Config, error) {
 		recorder.mutex.Lock()
 		defer recorder.mutex.Unlock()
@@ -55,79 +101,94 @@ func newServerNameRecorder(t *testing.T) *serverNameRecorder {
 	return recorder
 }
 
-func (recorder *serverNameRecorder) sent() []string {
+func (recorder *serverNameRecorder) recorded() (names, hosts, paths []string) {
 	recorder.mutex.Lock()
 	defer recorder.mutex.Unlock()
-	return slices.Clone(recorder.names)
+	return slices.Clone(recorder.names), slices.Clone(recorder.hosts), slices.Clone(recorder.paths)
 }
 
-// A tcp target's name is sent as the TLS server name, while the run connects to its address.
-func TestATCPTargetsNameIsTheTLSServerName(t *testing.T) {
-	recorder := newServerNameRecorder(t)
-	module := blackboxconfig.DefaultModule
-	module.Prober = "tcp"
-	module.TCP.TLS = true
-	module.TCP.TLSConfig = promconfig.TLSConfig{InsecureSkipVerify: true}
-	address := strings.TrimPrefix(recorder.server.URL, "https://")
-	if !probeWith(t, module, probeschedule.Target{Name: "mock-host.example", Address: address}) {
-		t.Fatal("the run failed")
+// A certificate check asks the address and port for the host's certificate, trusting the authorities given, and reports when it expires.
+func TestACertificateCheckAsksTheAddressForTheHostsCertificate(t *testing.T) {
+	recorder := newServerNameRecorder(t, http.StatusOK)
+	address, port := hostAndPort(t, recorder.server)
+	certificateProber := newProber(t, exporterconfig.CertificateProber, mockSettings(), trustedAuthorities(t, recorder.server))
+	succeeded, registry := probeWith(t, certificateProber, probeschedule.Target{Address: address, Port: port, Host: trustedHost})
+	if !succeeded {
+		t.Fatal("the check failed")
 	}
-	if sent := recorder.sent(); len(sent) != 1 || sent[0] != "mock-host.example" {
-		t.Errorf("server names sent = %v", sent)
+	if names, _, _ := recorder.recorded(); !slices.Equal(names, []string{trustedHost}) {
+		t.Errorf("server names sent = %v", names)
 	}
-}
-
-// A grpc target's name is sent as the TLS server name; the listener is no gRPC server, so only the handshake is checked.
-func TestAGRPCTargetsNameIsTheTLSServerName(t *testing.T) {
-	recorder := newServerNameRecorder(t)
-	module := blackboxconfig.DefaultModule
-	module.Prober = "grpc"
-	module.GRPC = blackboxconfig.DefaultGRPCProbe
-	module.GRPC.TLS = true
-	module.GRPC.TLSConfig = promconfig.TLSConfig{InsecureSkipVerify: true}
-	address := strings.TrimPrefix(recorder.server.URL, "https://")
-	probeWith(t, module, probeschedule.Target{Name: "mock-host.example", Address: address})
-	if sent := recorder.sent(); len(sent) == 0 || sent[0] != "mock-host.example" {
-		t.Errorf("server names sent = %v", sent)
+	families, _ := registry.Gather()
+	if !slices.ContainsFunc(families, func(family *dto.MetricFamily) bool { return family.GetName() == "probe_ssl_earliest_cert_expiry" }) {
+		t.Error("the check reported no certificate expiry")
 	}
 }
 
-// An http target's name is sent as the `Host` header, the settings' own headers kept and the settings themselves left unchanged.
-func TestAnHTTPTargetsNameIsTheHostHeader(t *testing.T) {
-	var host, mockHeader string
-	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
-		host, mockHeader = request.Host, request.Header.Get("X-Mock")
-	}))
-	defer server.Close()
-	module := blackboxconfig.DefaultModule
-	module.Prober = "http"
-	module.HTTP.Headers = map[string]string{"X-Mock": "mock-value"}
-	if !probeWith(t, module, probeschedule.Target{Name: "mock-host.example", Address: server.URL}) {
-		t.Fatal("the run failed")
-	}
-	if host != "mock-host.example" || mockHeader != "mock-value" {
-		t.Errorf("host = %q, X-Mock = %q", host, mockHeader)
-	}
-	if _, changed := module.HTTP.Headers["Host"]; changed {
-		t.Error("the module gained the target's Host header")
+func TestACertificateCheckFailsOnACertificateNotIssuedForTheHost(t *testing.T) {
+	recorder := newServerNameRecorder(t, http.StatusOK)
+	address, port := hostAndPort(t, recorder.server)
+	certificateProber := newProber(t, exporterconfig.CertificateProber, mockSettings(), trustedAuthorities(t, recorder.server))
+	if succeeded, _ := probeWith(t, certificateProber, probeschedule.Target{Address: address, Port: port, Host: "mock-other.invalid"}); succeeded {
+		t.Error("a certificate not issued for the host passed")
 	}
 }
 
-func TestHTTPSettingsWithoutHeadersStillSendTheName(t *testing.T) {
-	var host string
-	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) { host = request.Host }))
-	defer server.Close()
-	module := blackboxconfig.DefaultModule
-	module.Prober = "http"
-	module.HTTP.Headers = nil
-	probeWith(t, module, probeschedule.Target{Name: "mock-host.example", Address: server.URL})
-	if host != "mock-host.example" {
-		t.Errorf("host = %q", host)
+// An http check requests the path from the address and port as the host, the host also its TLS server name, and succeeds on the status codes given.
+func TestAnHTTPCheckRequestsThePathAsTheHost(t *testing.T) {
+	recorder := newServerNameRecorder(t, http.StatusOK)
+	address, port := hostAndPort(t, recorder.server)
+	httpProber := newProber(t, exporterconfig.HTTPProber, mockSettings(), trustedAuthorities(t, recorder.server))
+	if succeeded, _ := probeWith(t, httpProber, probeschedule.Target{Address: address, Port: port, Host: trustedHost}); !succeeded {
+		t.Fatal("the check failed")
+	}
+	names, hosts, paths := recorder.recorded()
+	if !slices.Equal(names, []string{trustedHost}) || !slices.Equal(hosts, []string{trustedHost}) || !slices.Equal(paths, []string{"/mock-path"}) {
+		t.Errorf("server names %v, hosts %v, paths %v", names, hosts, paths)
 	}
 }
 
-// A dns target's name is what its address, a DNS server, is asked.
-func TestADNSTargetsNameIsTheNameAsked(t *testing.T) {
+func TestAnHTTPCheckFailsOnAStatusCodeNotGiven(t *testing.T) {
+	recorder := newServerNameRecorder(t, http.StatusServiceUnavailable)
+	address, port := hostAndPort(t, recorder.server)
+	httpProber := newProber(t, exporterconfig.HTTPProber, mockSettings(), trustedAuthorities(t, recorder.server))
+	if succeeded, _ := probeWith(t, httpProber, probeschedule.Target{Address: address, Port: port, Host: trustedHost}); succeeded {
+		t.Error("a 503 passed a check expecting 200")
+	}
+}
+
+// A tcp check connects to the address and port, nothing more.
+func TestATCPCheckConnectsToTheAddressAndPort(t *testing.T) {
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	accepted := make(chan struct{}, 1)
+	go func() {
+		connection, err := listener.Accept()
+		if err == nil {
+			accepted <- struct{}{}
+			connection.Close()
+		}
+	}()
+	port := listener.Addr().(*net.TCPAddr).Port
+	tcpProber := newProber(t, exporterconfig.TCPProber, mockSettings(), "")
+	if succeeded, _ := probeWith(t, tcpProber, probeschedule.Target{Address: "127.0.0.1", Port: port}); !succeeded {
+		t.Error("the check failed")
+	}
+	select {
+	case <-accepted:
+	case <-time.After(time.Second):
+		t.Error("the check made no connection")
+	}
+	listener.Close()
+	if succeeded, _ := probeWith(t, tcpProber, probeschedule.Target{Address: "127.0.0.1", Port: port}); succeeded {
+		t.Error("a closed port passed")
+	}
+}
+
+// A dns check asks its address, a DNS server, for the host.
+func TestADNSCheckAsksTheAddressForTheHost(t *testing.T) {
 	listener, err := net.ListenPacket("udp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatal(err)
@@ -136,7 +197,7 @@ func TestADNSTargetsNameIsTheNameAsked(t *testing.T) {
 	var asked []string
 	server := &dns.Server{PacketConn: listener, Handler: dns.HandlerFunc(func(writer dns.ResponseWriter, request *dns.Msg) {
 		mutex.Lock()
-		asked = append(asked, request.Question[0].Name)
+		asked = append(asked, request.Question[0].Name+" "+dns.TypeToString[request.Question[0].Qtype])
 		mutex.Unlock()
 		answer := new(dns.Msg)
 		answer.SetReply(request)
@@ -146,24 +207,28 @@ func TestADNSTargetsNameIsTheNameAsked(t *testing.T) {
 	})}
 	go server.ActivateAndServe()
 	defer server.Shutdown()
-	module := blackboxconfig.DefaultModule
-	module.Prober = "dns"
-	module.DNS.TransportProtocol = "udp"
-	module.DNS.IPProtocol = "ip4"
-	module.DNS.QueryType = "A"
-	if !probeWith(t, module, probeschedule.Target{Name: "mock-name.example", Address: listener.LocalAddr().String()}) {
-		t.Fatal("the run failed")
+	dnsProber := newProber(t, exporterconfig.DNSProber, mockSettings(), "")
+	if succeeded, _ := probeWith(t, dnsProber, probeschedule.Target{Address: listener.LocalAddr().String(), Host: "mock-name.example"}); !succeeded {
+		t.Fatal("the check failed")
 	}
 	mutex.Lock()
 	defer mutex.Unlock()
-	if len(asked) != 1 || asked[0] != "mock-name.example." {
+	if !slices.Equal(asked, []string{"mock-name.example. A"}) {
 		t.Errorf("asked = %v", asked)
 	}
 }
 
-func TestAModuleNamingAProberBlackboxLacksIsRefused(t *testing.T) {
-	_, err := NewModuleProber(blackboxconfig.Module{Prober: "mock"})
-	if err == nil || err.Error() != "blackbox_exporter has no prober `mock`" {
+// A ping is blackbox's icmp prober over IPv4 first; it is not run here, as it needs a privilege the test may lack.
+func TestAPingIsBlackboxsICMPProber(t *testing.T) {
+	pingProber := newProber(t, exporterconfig.PingProber, mockSettings(), "")
+	if pingProber.module.Prober != "icmp" || pingProber.module.ICMP.IPProtocol != "ip4" || pingProber.module.Timeout != 3*time.Second {
+		t.Errorf("module = %+v", pingProber.module)
+	}
+}
+
+func TestAProberBlackboxCannotCarryOutIsRefused(t *testing.T) {
+	_, err := NewBlackboxProber(exporterconfig.DomainRegistrationProber, mockSettings(), "")
+	if err == nil || err.Error() != "blackbox_exporter carries out no prober `domain_registration`" {
 		t.Errorf("err = %v", err)
 	}
 }

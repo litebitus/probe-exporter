@@ -2,7 +2,9 @@ package exporterapp
 
 import (
 	"fmt"
+	"maps"
 	"net/http"
+	"slices"
 
 	"github.com/litebitus/probe-exporter/blackboxprobers"
 	"github.com/litebitus/probe-exporter/exporterconfig"
@@ -10,45 +12,45 @@ import (
 	"github.com/litebitus/probe-exporter/rdapprober"
 )
 
-// proberSet makes each probe's prober, every rdap probe sharing one bootstrap.
+// proberSet makes each configured prober, `domain_registration` from one shared RDAP bootstrap and every other from blackbox_exporter's probers.
 type proberSet struct {
-	rdapProber rdapprober.RDAPProber
+	rdapProber             rdapprober.RDAPProber
+	trustedAuthoritiesFile string
 }
 
-func newProberSet(bootstrap *rdapprober.Bootstrap, client *http.Client) *proberSet {
-	return &proberSet{rdapProber: rdapprober.NewRDAPProber(bootstrap, client)}
+func newProberSet(bootstrap *rdapprober.Bootstrap, client *http.Client, trustedAuthoritiesFile string) *proberSet {
+	return &proberSet{rdapProber: rdapprober.NewRDAPProber(bootstrap, client), trustedAuthoritiesFile: trustedAuthoritiesFile}
 }
 
-func (probers *proberSet) prober(probe exporterconfig.Probe) (probeschedule.Prober, error) {
-	if probe.Prober == exporterconfig.RDAPProber {
+func (probers *proberSet) prober(proberName string, settings exporterconfig.ProberSettings) (probeschedule.Prober, error) {
+	if proberName == exporterconfig.DomainRegistrationProber {
 		return probers.rdapProber, nil
 	}
-	return blackboxprobers.NewModuleProber(probe.BlackboxModule)
+	return blackboxprobers.NewBlackboxProber(proberName, settings, probers.trustedAuthoritiesFile)
 }
 
 func (probers *proberSet) probes(configuration exporterconfig.Configuration) ([]probeschedule.Probe, error) {
-	probeProbers := map[string]probeschedule.Prober{}
-	for name, probe := range configuration.Probes {
-		prober, err := probers.prober(probe)
+	configured := map[string]probeschedule.Prober{}
+	for _, proberName := range slices.Sorted(maps.Keys(configuration.Probers)) {
+		prober, err := probers.prober(proberName, configuration.Probers[proberName])
 		if err != nil {
-			return nil, fmt.Errorf("probe `%s`: %w", name, err)
+			return nil, err
 		}
-		probeProbers[name] = prober
+		configured[proberName] = prober
 	}
 	var probes []probeschedule.Probe
-	for _, probeTarget := range configuration.ProbeTargets() {
-		probe := configuration.Probes[probeTarget.Probe]
+	for _, run := range configuration.Runs() {
+		settings := configuration.Probers[run.Prober]
 		probes = append(probes, probeschedule.Probe{
 			Identity: probeschedule.ProbeIdentity{
-				Probe:       probeTarget.Probe,
-				TargetGroup: probeTarget.TargetGroup,
-				Target:      probeschedule.Target{Name: probeTarget.Name, Address: probeTarget.Address},
+				ProbeTarget: run.ProbeTarget,
+				Prober:      run.Prober,
+				Target:      probeschedule.Target{Address: run.Address, Port: run.Port, Host: run.Host},
 			},
-			Labels:         probeTarget.Labels,
-			Interval:       probeTarget.Interval,
-			Timeout:        probe.Timeout,
-			Prober:         probeProbers[probeTarget.Probe],
-			ProberSettings: probe.WrittenSettings,
+			Interval:       settings.Interval,
+			Timeout:        settings.Timeout,
+			Prober:         configured[run.Prober],
+			ProberSettings: fmt.Sprintf("%+v", settings),
 		})
 	}
 	return probes, nil

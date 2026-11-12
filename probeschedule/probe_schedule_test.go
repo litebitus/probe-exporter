@@ -73,7 +73,7 @@ func (keeper *mockKeeper) result(identity ProbeIdentity) (Result, bool) {
 }
 
 func mockIdentity(target string) ProbeIdentity {
-	return ProbeIdentity{Probe: "mock_probe", TargetGroup: "mock-group", Target: Target{Address: target}}
+	return ProbeIdentity{ProbeTarget: "mock-target", Prober: "mock_prober", Target: Target{Address: target, Port: 443, Host: "mock-host.example"}}
 }
 
 func mockProbe(target string, prober Prober, interval time.Duration) Probe {
@@ -217,13 +217,13 @@ func TestApplyingAgainKeepsUnchangedProbesAndStopsThoseNotGiven(t *testing.T) {
 	}
 }
 
-func TestAProbesLabelsAreAmongItsSettings(t *testing.T) {
+func TestAProbesTimingAndProberSettingsAreItsSettings(t *testing.T) {
 	probe := mockProbe("mock-a", &mockProber{}, time.Minute)
-	probe.Labels = map[string]string{"mock_b": "2", "mock_a": "1"}
-	relabeled := probe
-	relabeled.Labels = map[string]string{"mock_a": "1"}
-	if probe.fingerprint() == relabeled.fingerprint() || probe.fingerprint() != probe.fingerprint() {
-		t.Error("a probe's labels do not decide its settings")
+	retimed, resettled := probe, probe
+	retimed.Timeout = 2 * time.Second
+	resettled.ProberSettings = "mock-other"
+	if probe.fingerprint() == retimed.fingerprint() || probe.fingerprint() == resettled.fingerprint() || probe.fingerprint() != probe.fingerprint() {
+		t.Error("a probe's timeout and prober settings do not decide its settings")
 	}
 }
 

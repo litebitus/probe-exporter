@@ -1,17 +1,17 @@
 # probe-exporter
 
-An OpenMetrics exporter that owns its probes and their targets, running [blackbox_exporter](https://github.com/prometheus/blackbox_exporter)'s probers and its own.
+An OpenMetrics exporter that owns its targets: its configuration names what is probed and the probers that check it, and a scraper needs only the exporter's address.
 
 ## Features
 
-- The configuration lists what to probe, in named target groups, so a scraper needs only the exporter's address and every target has one home.
-- Probes run on their own schedule, staggered and bounded in how many runs happen at once, and their latest results are served between runs.
-- Every series carries its `probe`, `target_group`, `name` and `address`.
-- blackbox_exporter's probers run unchanged, imported as a library, and a `blackbox.yml` module's settings carry over as they are.
-- Each probe's targets are checked against its prober, in the editor as in the exporter: a `tcp` target takes a port, an `http` target is a URL.
-- A target is a name and the addresses it is checked at, so a name served by several hosts is checked at each of them.
-- The `rdap` prober reads a domain's registration expiry from its registry over RDAP.
-- `/results` shows each target's latest result with its log, so why a run failed stays readable.
+- Each probe target lists its probers: `certificate`, `dns`, `domain_registration`, `http`, `ping` and `tcp`.
+- A target that serves several hosts at several addresses is checked for each host at each address, written once.
+- Checks run on their own schedule, staggered and bounded in how many run at once, and their latest results are served between runs.
+- Every series carries its `probe_target`, `prober`, `address`, and its `port` and `host` where the prober takes them.
+- blackbox_exporter's probers carry out most checks, imported as a library and run unchanged.
+- `domain_registration` reads a domain's registration expiry from its registry over RDAP.
+- The configuration is checked against its version's JSON Schema, in the editor as in the exporter, each problem reported at its line and column.
+- `/results` shows each check's latest result with its log, so why a check failed stays readable.
 
 The design, the configuration and every series are in [docs/design.md](docs/design.md).
 
@@ -21,7 +21,7 @@ The design, the configuration and every series are in [docs/design.md](docs/desi
 probe-exporter --config.file=probe-exporter.yml --web.listen-address=:9123
 ```
 
-[`examples/probe-exporter.yml`](examples/probe-exporter.yml) is an example configuration.
+[`examples/probe-exporter.yml`](examples/probe-exporter.yml) is an example configuration using every prober.
 
 The container image is `ghcr.io/litebitus/probe-exporter:<version>`, distroless and running as a non-root user:
 
@@ -67,10 +67,9 @@ Go builds and tests the repo.
 | Target | Does |
 |---|---|
 | `make build` | runs the tests, then builds the exporter into `bin/` |
-| `make schema` | fills the `blackbox_*` definitions of the newest minor's JSON Schema from the blackbox_exporter release the exporter builds with, keeping the rest as written |
-| `make test` | `go vet`, a `gofmt` check, the Go tests with the race detector, the integration tests, a check that the committed schema's `blackbox_*` definitions are what `make schema` fills, and a check that the tests cover at least 95% of the code |
+| `make test` | `go vet`, a `gofmt` check, the Go tests with the race detector, the integration tests, and a check that the tests cover at least 95% of the code |
 
-The integration tests run the exporter from a configuration file over HTTP, against local TLS listeners and RDAP registries, reloading it as `SIGHUP` does.
+The integration tests run the exporter from a configuration file over HTTP, against a local HTTPS listener and RDAP registry, reloading it as `SIGHUP` does.
 
 ### Releases
 

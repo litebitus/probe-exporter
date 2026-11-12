@@ -12,7 +12,7 @@ import (
 
 const answerSizeLimit = 8 << 20
 
-// githubContainerRegistry is one GitHub Container Registry package of an organization: its versions through GitHub's API, and its image indexes through the registry.
+// githubContainerRegistry is one GitHub Container Registry package of a personal account: its versions through GitHub's API, and its image indexes through the registry.
 type githubContainerRegistry struct {
 	client      *http.Client
 	apiURL      string
@@ -34,7 +34,7 @@ type versionAnswer struct {
 }
 
 func (registry githubContainerRegistry) versionsURL() string {
-	return fmt.Sprintf("%s/orgs/%s/packages/container/%s/versions", registry.apiURL, url.PathEscape(registry.owner), url.PathEscape(registry.packageName))
+	return fmt.Sprintf("%s/users/%s/packages/container/%s/versions", registry.apiURL, url.PathEscape(registry.owner), url.PathEscape(registry.packageName))
 }
 
 // Versions are every version of the package, read a page at a time.

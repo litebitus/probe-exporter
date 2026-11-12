@@ -58,12 +58,6 @@ func readMinorSchemas(files fs.FS) ([]minorSchema, error) {
 	return read, nil
 }
 
-// NewestMinor is the newest minor version the exporter carries, and its schema file's name.
-func NewestMinor() (version, fileName string) {
-	newest := minorSchemas[len(minorSchemas)-1]
-	return newest.version(), newest.fileName
-}
-
 // SchemaFor is the schema a configuration's stated version names, and the minor version it is: a minor names its own schema, and a major alone floats to its newest minor.
 func SchemaFor(stated string) (text []byte, minorVersion string, err error) {
 	for index := len(minorSchemas) - 1; index >= 0; index-- {

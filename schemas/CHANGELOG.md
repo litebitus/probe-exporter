@@ -4,4 +4,4 @@ Each version is the format a configuration names in its `version`, and the schem
 
 ## 1.0 — unreleased
 
-- The first format: `probes`, each a prober with its settings, `interval` and `target_groups`, and `max_concurrent_probes`.
+- The first format: `probers`, each prober's settings, and `probe_targets`, each target with its probers, `addresses` and `serves`.

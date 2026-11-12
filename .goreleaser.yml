@@ -38,6 +38,8 @@ kos:
       - linux/arm64
     tags:
       - "{{ .Version }}"
+    annotations:
+      org.opencontainers.image.source: https://github.com/litebitus/probe-exporter
     bare: true
     sbom: none
     creation_time: "{{ .CommitTimestamp }}"

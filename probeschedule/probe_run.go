@@ -37,7 +37,6 @@ func RunProbe(ctx context.Context, probe Probe) Result {
 	}
 	return Result{
 		Identity: probe.Identity,
-		Labels:   probe.Labels,
 		Success:  success,
 		Duration: duration,
 		EndedAt:  endedAt,

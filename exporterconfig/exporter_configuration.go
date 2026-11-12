@@ -6,71 +6,53 @@ import (
 	"errors"
 	"fmt"
 	"os"
-	"slices"
 	"strconv"
 	"strings"
 	"time"
 
 	yamldslspec "github.com/litebitus/yaml-dsl-spec/go"
-	blackboxconfig "github.com/prometheus/blackbox_exporter/config"
 	"go.yaml.in/yaml/v3"
 
 	"github.com/litebitus/probe-exporter/schemas"
 )
 
-// RDAPProber is the prober the exporter adds to blackbox_exporter's.
-const RDAPProber = "rdap"
+// The probers a configuration names.
+const (
+	CertificateProber        = "certificate"
+	DNSProber                = "dns"
+	DomainRegistrationProber = "domain_registration"
+	HTTPProber               = "http"
+	PingProber               = "ping"
+	TCPProber                = "tcp"
+)
 
 // Configuration is a loaded configuration file, and the minor version of the format it is read as.
 type Configuration struct {
-	Version             string
-	Probes              map[string]Probe
-	MaxConcurrentProbes int
+	Version      string
+	Probers      map[string]ProberSettings
+	ProbeTargets map[string]ProbeTarget
 }
 
-// Probe is a prober with its settings, how often it runs and its targets; a blackbox prober's settings in blackbox_exporter's module format, and the prober and its settings as written.
-type Probe struct {
-	Prober          string
-	Timeout         time.Duration
-	Interval        time.Duration
-	TargetGroups    map[string]TargetGroup
-	BlackboxModule  blackboxconfig.Module
-	WrittenSettings string
+// ProberSettings are a prober's settings: how often it checks each target and how long a check may take, and what the prober itself takes.
+type ProberSettings struct {
+	Interval    time.Duration `yaml:"interval"`
+	Timeout     time.Duration `yaml:"timeout"`
+	Ports       []int         `yaml:"ports"`
+	Path        string        `yaml:"path"`
+	StatusCodes []int         `yaml:"status_codes"`
 }
 
-// TargetGroup is targets and the labels they share.
-type TargetGroup struct {
-	Targets []Target
-	Labels  map[string]string
-}
-
-// Target is a name and the addresses it is checked at, one run per address.
-type Target struct {
-	Name      string   `yaml:"name"`
+// ProbeTarget is what is probed: the probers that check it, where it is reached, and the hosts it serves.
+type ProbeTarget struct {
+	Probers   []string `yaml:"probers"`
 	Addresses []string `yaml:"addresses"`
+	Serves    []string `yaml:"serves"`
 }
 
 type configurationFile struct {
-	Version             string               `yaml:"version"`
-	Probes              map[string]yaml.Node `yaml:"probes"`
-	MaxConcurrentProbes int                  `yaml:"max_concurrent_probes"`
-}
-
-// probeFieldsEntry is what a probe states beside its prober's settings: its prober, how often it runs and its targets.
-type probeFieldsEntry struct {
-	Prober       string                      `yaml:"prober"`
-	Interval     time.Duration               `yaml:"interval"`
-	TargetGroups map[string]targetGroupEntry `yaml:"target_groups"`
-}
-
-type targetGroupEntry struct {
-	Targets []Target          `yaml:"targets"`
-	Labels  map[string]string `yaml:"labels"`
-}
-
-type rdapSettingsEntry struct {
-	Prober  string        `yaml:"prober"`
-	Timeout time.Duration `yaml:"timeout"`
+	Version      string                    `yaml:"version"`
+	Probers      map[string]ProberSettings `yaml:"probers"`
+	ProbeTargets map[string]ProbeTarget    `yaml:"probe_targets"`
 }
 
 // configurationSchemas are the schemas the exporter carries, each loaded once.
@@ -106,18 +88,8 @@ func Parse(sourceName string, text []byte) (Configuration, error) {
 	if err := strictDecode(text, &file); err != nil {
 		return Configuration{}, report.of([]yamldslspec.Diagnostic{yamldslspec.UnplacedDiagnostic(err.Error())})
 	}
-	configuration := Configuration{Version: minorVersion, Probes: map[string]Probe{}, MaxConcurrentProbes: file.MaxConcurrentProbes}
-	var problems []yamldslspec.Diagnostic
-	for name, node := range file.Probes {
-		probe, err := decodeProbe(&node)
-		if err != nil {
-			problems = append(problems, placedAtKey(root, fmt.Sprintf("probe `%s`: %v", name, err), "probes", name))
-			continue
-		}
-		configuration.Probes[name] = probe
-	}
-	problems = append(problems, checkConfiguration(configuration, root)...)
-	if len(problems) > 0 {
+	configuration := Configuration{Version: minorVersion, Probers: file.Probers, ProbeTargets: file.ProbeTargets}
+	if problems := checkConfiguration(configuration, root); len(problems) > 0 {
 		return Configuration{}, report.of(problems)
 	}
 	return configuration, nil
@@ -167,81 +139,6 @@ func quotedAlternatives(values []string) string {
 		return strings.Join(quoted, "")
 	}
 	return strings.Join(quoted[:len(quoted)-1], ", ") + " or " + quoted[len(quoted)-1]
-}
-
-// decodeProbe reads a probe: its interval and targets, then its prober and settings, a blackbox prober's as blackbox_exporter reads a module.
-func decodeProbe(probeNode *yaml.Node) (Probe, error) {
-	var written probeFieldsEntry
-	if err := probeNode.Decode(&written); err != nil {
-		return Probe{}, err
-	}
-	node := withoutKeys(probeNode, "interval", "target_groups")
-	text, err := yaml.Marshal(node)
-	if err != nil {
-		return Probe{}, err
-	}
-	probe := Probe{
-		Prober:          written.Prober,
-		Interval:        written.Interval,
-		TargetGroups:    map[string]TargetGroup{},
-		WrittenSettings: string(text),
-	}
-	for name, group := range written.TargetGroups {
-		probe.TargetGroups[name] = TargetGroup(group)
-	}
-	if written.Prober == RDAPProber {
-		var rdapSettings rdapSettingsEntry
-		if err := strictDecode(text, &rdapSettings); err != nil {
-			return Probe{}, err
-		}
-		probe.Timeout = rdapSettings.Timeout
-		return probe, nil
-	}
-	decodedText := text
-	if written.Prober == "dns" {
-		decodedText, err = withStandInQueryName(node)
-		if err != nil {
-			return Probe{}, err
-		}
-	}
-	if err := strictDecode(decodedText, &probe.BlackboxModule); err != nil {
-		return Probe{}, err
-	}
-	if written.Prober == "dns" {
-		probe.BlackboxModule.DNS.QueryName = ""
-	}
-	probe.Timeout = probe.BlackboxModule.Timeout
-	return probe, nil
-}
-
-// withoutKeys is a mapping node without the entries of some keys, the node itself left as it is.
-func withoutKeys(mapping *yaml.Node, keys ...string) *yaml.Node {
-	kept := *mapping
-	kept.Content = nil
-	for index := 0; index+1 < len(mapping.Content); index += 2 {
-		if !slices.Contains(keys, mapping.Content[index].Value) {
-			kept.Content = append(kept.Content, mapping.Content[index], mapping.Content[index+1])
-		}
-	}
-	return &kept
-}
-
-// standInQueryName passes blackbox's required `query_name` check for a dns probe, whose targets each state the name asked.
-const standInQueryName = "query-name.invalid"
-
-// withStandInQueryName is a dns probe's settings with the stand-in query name, the schema having refused one stated.
-func withStandInQueryName(node *yaml.Node) ([]byte, error) {
-	var settings map[string]any
-	if err := node.Decode(&settings); err != nil {
-		return nil, err
-	}
-	dnsSettings, _ := settings["dns"].(map[string]any)
-	if dnsSettings == nil {
-		dnsSettings = map[string]any{}
-	}
-	dnsSettings["query_name"] = standInQueryName
-	settings["dns"] = dnsSettings
-	return yaml.Marshal(settings)
 }
 
 func strictDecode(text []byte, into any) error {

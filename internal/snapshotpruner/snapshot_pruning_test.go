@@ -39,7 +39,7 @@ type mockGitHub struct {
 func newMockGitHub(t *testing.T, versions []mockVersion) *mockGitHub {
 	github := &mockGitHub{versions: versions}
 	mux := http.NewServeMux()
-	mux.HandleFunc("GET /orgs/mock-org/packages/container/mock-exporter/versions", func(writer http.ResponseWriter, request *http.Request) {
+	mux.HandleFunc("GET /users/mock-account/packages/container/mock-exporter/versions", func(writer http.ResponseWriter, request *http.Request) {
 		if github.failListing || request.Header.Get("Authorization") != "Bearer mock-token" {
 			http.Error(writer, "mock", http.StatusForbidden)
 			return
@@ -57,7 +57,7 @@ func newMockGitHub(t *testing.T, versions []mockVersion) *mockGitHub {
 		}
 		json.NewEncoder(writer).Encode(answers)
 	})
-	mux.HandleFunc("DELETE /orgs/mock-org/packages/container/mock-exporter/versions/{id}", func(writer http.ResponseWriter, request *http.Request) {
+	mux.HandleFunc("DELETE /users/mock-account/packages/container/mock-exporter/versions/{id}", func(writer http.ResponseWriter, request *http.Request) {
 		if github.failDelete {
 			http.Error(writer, "mock", http.StatusForbidden)
 			return
@@ -69,13 +69,13 @@ func newMockGitHub(t *testing.T, versions []mockVersion) *mockGitHub {
 		writer.WriteHeader(http.StatusNoContent)
 	})
 	mux.HandleFunc("GET /token", func(writer http.ResponseWriter, request *http.Request) {
-		if request.URL.Query().Get("scope") != "repository:mock-org/mock-exporter:pull" {
+		if request.URL.Query().Get("scope") != "repository:mock-account/mock-exporter:pull" {
 			http.Error(writer, "mock", http.StatusUnauthorized)
 			return
 		}
 		fmt.Fprint(writer, `{"token":"mock-registry-token"}`)
 	})
-	mux.HandleFunc("GET /v2/mock-org/mock-exporter/manifests/{digest}", func(writer http.ResponseWriter, request *http.Request) {
+	mux.HandleFunc("GET /v2/mock-account/mock-exporter/manifests/{digest}", func(writer http.ResponseWriter, request *http.Request) {
 		if github.failManifest || request.Header.Get("Authorization") != "Bearer mock-registry-token" {
 			http.Error(writer, "mock", http.StatusUnauthorized)
 			return
@@ -124,7 +124,7 @@ func mockVersions() []mockVersion {
 // An expired snapshot goes with the platform images only it lists; a newer snapshot, a release and what they list stay.
 func TestAnExpiredSnapshotGoesWithThePlatformImagesOnlyItLists(t *testing.T) {
 	github := newMockGitHub(t, mockVersions())
-	output, err := github.run("--owner", "mock-org", "--package", "mock-exporter", "--max-age-days", "14")
+	output, err := github.run("--owner", "mock-account", "--package", "mock-exporter", "--max-age-days", "14")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -138,7 +138,7 @@ func TestAnExpiredSnapshotGoesWithThePlatformImagesOnlyItLists(t *testing.T) {
 
 func TestADryRunNamesWhatItWouldDeleteAndDeletesNothing(t *testing.T) {
 	github := newMockGitHub(t, mockVersions())
-	output, err := github.run("--owner", "mock-org", "--package", "mock-exporter", "--max-age-days", "14", "--dry-run")
+	output, err := github.run("--owner", "mock-account", "--package", "mock-exporter", "--max-age-days", "14", "--dry-run")
 	if err != nil || len(github.deleted) != 0 || output != "would delete sha256:old-snapshot\nwould delete sha256:old-amd64\n" {
 		t.Errorf("deleted %v, output %q (%v)", github.deleted, output, err)
 	}
@@ -148,7 +148,7 @@ func TestASnapshotTaggedAlsoAsAReleaseIsKept(t *testing.T) {
 	versions := mockVersions()
 	versions[0].tags = append(versions[0].tags, "0.0.1")
 	github := newMockGitHub(t, versions)
-	if _, err := github.run("--owner", "mock-org", "--package", "mock-exporter", "--max-age-days", "14"); err != nil || len(github.deleted) != 0 {
+	if _, err := github.run("--owner", "mock-account", "--package", "mock-exporter", "--max-age-days", "14"); err != nil || len(github.deleted) != 0 {
 		t.Errorf("deleted %v (%v)", github.deleted, err)
 	}
 }
@@ -159,7 +159,7 @@ func TestEveryPageOfVersionsIsRead(t *testing.T) {
 		versions = append([]mockVersion{{id: id, digest: fmt.Sprintf("sha256:filler-%d", id), age: time.Hour}}, versions...)
 	}
 	github := newMockGitHub(t, versions)
-	if _, err := github.run("--owner", "mock-org", "--package", "mock-exporter", "--max-age-days", "14"); err != nil ||
+	if _, err := github.run("--owner", "mock-account", "--package", "mock-exporter", "--max-age-days", "14"); err != nil ||
 		!slices.Equal(github.deleted, []int64{1, 2}) {
 		t.Errorf("deleted %v (%v)", github.deleted, err)
 	}
@@ -173,13 +173,13 @@ func TestAFailureStopsThePruning(t *testing.T) {
 	} {
 		github := newMockGitHub(t, mockVersions())
 		fail(github)
-		if _, err := github.run("--owner", "mock-org", "--package", "mock-exporter", "--max-age-days", "14"); err == nil {
+		if _, err := github.run("--owner", "mock-account", "--package", "mock-exporter", "--max-age-days", "14"); err == nil {
 			t.Errorf("%s: the failure was not answered", name)
 		}
 	}
 	github := newMockGitHub(t, mockVersions())
 	output := &strings.Builder{}
-	if err := run(context.Background(), []string{"--owner", "mock-org", "--package", "mock-exporter", "--max-age-days", "14"},
+	if err := run(context.Background(), []string{"--owner", "mock-account", "--package", "mock-exporter", "--max-age-days", "14"},
 		"mock-wrong-token", output, github.server.Client(), github.server.URL, github.server.URL, mockNow); err == nil {
 		t.Error("a refused token was not answered")
 	}
@@ -207,19 +207,19 @@ func TestARequestThatNeverArrivesStopsThePruning(t *testing.T) {
 		github := newMockGitHub(t, mockVersions())
 		transport.next = github.server.Client().Transport
 		client := &http.Client{Transport: transport}
-		err := run(context.Background(), []string{"--owner", "mock-org", "--package", "mock-exporter", "--max-age-days", "14"},
+		err := run(context.Background(), []string{"--owner", "mock-account", "--package", "mock-exporter", "--max-age-days", "14"},
 			"mock-token", &strings.Builder{}, client, github.server.URL, github.server.URL, mockNow)
 		if err == nil || !strings.Contains(err.Error(), "mock unreachable") {
 			t.Errorf("%s: err = %v", name, err)
 		}
 	}
 	github := newMockGitHub(t, mockVersions())
-	err := run(context.Background(), []string{"--owner", "mock-org", "--package", "mock-exporter", "--max-age-days", "14"},
+	err := run(context.Background(), []string{"--owner", "mock-account", "--package", "mock-exporter", "--max-age-days", "14"},
 		"mock-token", &strings.Builder{}, github.server.Client(), "http://[::1", github.server.URL, mockNow)
 	if err == nil {
 		t.Error("a malformed API address was used")
 	}
-	registry := githubContainerRegistry{client: github.server.Client(), apiURL: "http://[::1", owner: "mock-org", packageName: "mock-exporter"}
+	registry := githubContainerRegistry{client: github.server.Client(), apiURL: "http://[::1", owner: "mock-account", packageName: "mock-exporter"}
 	if err := registry.DeleteVersion(context.Background(), 1); err == nil {
 		t.Error("a delete through a malformed API address was sent")
 	}
@@ -229,7 +229,7 @@ func TestAPlatformImageTheIndexNoLongerHoldsIsSkipped(t *testing.T) {
 	versions := mockVersions()
 	versions[0].platforms = append(versions[0].platforms, "sha256:already-gone")
 	github := newMockGitHub(t, versions)
-	if _, err := github.run("--owner", "mock-org", "--package", "mock-exporter", "--max-age-days", "14"); err != nil ||
+	if _, err := github.run("--owner", "mock-account", "--package", "mock-exporter", "--max-age-days", "14"); err != nil ||
 		!slices.Equal(github.deleted, []int64{1, 2}) {
 		t.Errorf("deleted %v (%v)", github.deleted, err)
 	}
@@ -242,9 +242,9 @@ func TestThePrunerNeedsItsPackageAnAgeAndAToken(t *testing.T) {
 		token     string
 		want      string
 	}{
-		"no package":   {[]string{"--owner", "mock-org", "--max-age-days", "14"}, "mock-token", "--owner and --package are required"},
-		"no age":       {[]string{"--owner", "mock-org", "--package", "mock-exporter"}, "mock-token", "--max-age-days is required, at least 1"},
-		"no token":     {[]string{"--owner", "mock-org", "--package", "mock-exporter", "--max-age-days", "14"}, "", "GITHUB_TOKEN is required"},
+		"no package":   {[]string{"--owner", "mock-account", "--max-age-days", "14"}, "mock-token", "--owner and --package are required"},
+		"no age":       {[]string{"--owner", "mock-account", "--package", "mock-exporter"}, "mock-token", "--max-age-days is required, at least 1"},
+		"no token":     {[]string{"--owner", "mock-account", "--package", "mock-exporter", "--max-age-days", "14"}, "", "GITHUB_TOKEN is required"},
 		"unknown flag": {[]string{"--mock"}, "mock-token", "flag provided but not defined: -mock"},
 	} {
 		err := run(context.Background(), testCase.arguments, testCase.token, &strings.Builder{}, github.server.Client(),

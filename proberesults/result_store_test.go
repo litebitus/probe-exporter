@@ -21,14 +21,13 @@ func mockFamily(name string, value float64, labels ...string) *dto.MetricFamily 
 	return &dto.MetricFamily{Name: proto.String(name), Help: proto.String("A mock series"), Type: dto.MetricType_GAUGE.Enum(), Metric: []*dto.Metric{metric}}
 }
 
-func mockResult(name, address string, success bool, families ...*dto.MetricFamily) probeschedule.Result {
+func mockResult(host, address string, success bool, families ...*dto.MetricFamily) probeschedule.Result {
 	return probeschedule.Result{
 		Identity: probeschedule.ProbeIdentity{
-			Probe:       "mock_probe",
-			TargetGroup: "mock-group",
-			Target:      probeschedule.Target{Name: name, Address: address},
+			ProbeTarget: "mock-target",
+			Prober:      "certificate",
+			Target:      probeschedule.Target{Address: address, Port: 443, Host: host},
 		},
-		Labels:   map[string]string{"mock_site": "mock-site"},
 		Success:  success,
 		Duration: 1500 * time.Millisecond,
 		EndedAt:  time.Date(2026, 11, 11, 10, 0, 0, 0, time.UTC),
@@ -45,18 +44,20 @@ func labelsOf(metric *dto.Metric) string {
 	return strings.Join(pairs, ",")
 }
 
-// Every series of a result carries its run's place and its group's labels, in label-name order, beside the prober's own.
-func TestEachSeriesCarriesItsRunsPlaceAndItsGroupsLabels(t *testing.T) {
+// Every series of a result carries its run's place, in label-name order, beside the prober's own; a port or host the run took none of is no label.
+func TestEachSeriesCarriesItsRunsPlace(t *testing.T) {
 	store := NewResultStore()
-	store.Keep(mockResult("mock-a.example", "192.0.2.10:443", true, mockFamily("mock_value", 7, "mock_prober_label", "mock")))
-	store.Keep(mockResult("mock-b.example", "192.0.2.53", true, mockFamily("mock_value", 8)))
+	store.Keep(mockResult("mock-a.example", "192.0.2.10", true, mockFamily("mock_value", 7, "mock_prober_label", "mock")))
+	ping := mockResult("", "192.0.2.53", true, mockFamily("mock_value", 8))
+	ping.Identity.Prober, ping.Identity.Target.Port = "ping", 0
+	store.Keep(ping)
 	families, err := store.Gather()
 	if err != nil || len(families) != 1 || len(families[0].Metric) != 2 {
 		t.Fatalf("families = %v (%v)", families, err)
 	}
 	want := []string{
-		"address=192.0.2.10:443,mock_prober_label=mock,mock_site=mock-site,name=mock-a.example,probe=mock_probe,target_group=mock-group",
-		"address=192.0.2.53,mock_site=mock-site,name=mock-b.example,probe=mock_probe,target_group=mock-group",
+		"address=192.0.2.10,host=mock-a.example,mock_prober_label=mock,port=443,probe_target=mock-target,prober=certificate",
+		"address=192.0.2.53,probe_target=mock-target,prober=ping",
 	}
 	for index, metric := range families[0].Metric {
 		if got := labelsOf(metric); got != want[index] {
@@ -101,15 +102,15 @@ func TestALatestResultReplacesTheOneBeforeAndARetainDropsTheRest(t *testing.T) {
 func TestResultsAreOrderedByTheirRunsPlace(t *testing.T) {
 	store := NewResultStore()
 	for _, run := range [][2]string{
-		{"mock-b.example", "192.0.2.10:443"}, {"mock-a.example", "192.0.2.11:443"}, {"mock-a.example", "192.0.2.10:443"},
+		{"mock-b.example", "192.0.2.10"}, {"mock-a.example", "192.0.2.11"}, {"mock-a.example", "192.0.2.10"},
 	} {
 		store.Keep(mockResult(run[0], run[1], true))
 	}
 	var got []string
 	for _, result := range store.Results() {
-		got = append(got, result.Identity.Target.Name+"@"+result.Identity.Target.Address)
+		got = append(got, result.Identity.Target.Address+"/"+result.Identity.Target.Host)
 	}
-	if want := "mock-a.example@192.0.2.10:443,mock-a.example@192.0.2.11:443,mock-b.example@192.0.2.10:443"; strings.Join(got, ",") != want {
+	if want := "192.0.2.10/mock-a.example,192.0.2.10/mock-b.example,192.0.2.11/mock-a.example"; strings.Join(got, ",") != want {
 		t.Errorf("order = %v, want %s", got, want)
 	}
 }
@@ -122,7 +123,7 @@ func TestTheResultsPageShowsEachRunWithItsLogEscaped(t *testing.T) {
 	body, _ := io.ReadAll(recorder.Body)
 	page := string(body)
 	for _, want := range []string{
-		"<td>mock_probe</td>", "<td>mock-group</td>", "<td>mock-a.example</td>", "<td>192.0.2.10:443</td>",
+		"<td>mock-target</td>", "<td>certificate</td>", "<td>192.0.2.10:443</td>", "<td>443</td>", "<td>mock-a.example</td>",
 		`<span class="failed">failed</span>`, "2026-11-11T10:00:00Z", "<td>1.5s</td>", "mock log line &lt;script&gt;",
 	} {
 		if !strings.Contains(page, want) {

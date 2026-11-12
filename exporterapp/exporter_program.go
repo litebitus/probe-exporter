@@ -27,13 +27,14 @@ import (
 
 const shutdownTimeout = 5 * time.Second
 
-// ProgramSettings is what the program runs with beyond its command line: where it writes, and where its reload signals and RDAP bootstrap come from.
+// ProgramSettings is what the program runs with beyond its command line: where it writes, where its reload signals and RDAP bootstrap come from, and the certificate authorities its TLS checks trust, the system's where empty.
 type ProgramSettings struct {
-	Version          string
-	Output           io.Writer
-	ReloadSignals    <-chan os.Signal
-	RDAPBootstrapURL string
-	HTTPClient       *http.Client
+	Version                string
+	Output                 io.Writer
+	ReloadSignals          <-chan os.Signal
+	RDAPBootstrapURL       string
+	HTTPClient             *http.Client
+	TrustedAuthoritiesFile string
 }
 
 // Run runs the exporter with its command-line arguments until the context ends.
@@ -48,6 +49,7 @@ func Run(ctx context.Context, arguments []string, settings ProgramSettings) erro
 	configurationFile := application.Flag("config.file", "The configuration file.").Required().String()
 	listenAddresses := application.Flag("web.listen-address", "An address to listen on; repeatable.").Required().Strings()
 	webConfigFile := application.Flag("web.config.file", "The exporter-toolkit web configuration, for TLS and authentication.").Default("").String()
+	maxConcurrentProbes := application.Flag("probes.max-concurrent", "How many probes run at once.").Default("8").Int()
 	logConfig := &promslog.Config{Writer: settings.Output}
 	promslogflag.AddFlags(application, logConfig)
 	_, err := application.Parse(arguments)
@@ -57,14 +59,19 @@ func Run(ctx context.Context, arguments []string, settings ProgramSettings) erro
 	if err != nil {
 		return err
 	}
+	if *maxConcurrentProbes < 1 {
+		return fmt.Errorf("--probes.max-concurrent must be at least 1, not %d", *maxConcurrentProbes)
+	}
 	logger := promslog.New(logConfig)
 
 	program := &exporterProgram{
 		logger:            logger,
 		configurationFile: *configurationFile,
-		probers:           newProberSet(rdapprober.NewBootstrap(settings.RDAPBootstrapURL, settings.HTTPClient), settings.HTTPClient),
-		store:             proberesults.NewResultStore(),
-		ownRegistry:       prometheus.NewRegistry(),
+		probers: newProberSet(rdapprober.NewBootstrap(settings.RDAPBootstrapURL, settings.HTTPClient), settings.HTTPClient,
+			settings.TrustedAuthoritiesFile),
+		store:               proberesults.NewResultStore(),
+		ownRegistry:         prometheus.NewRegistry(),
+		maxConcurrentProbes: *maxConcurrentProbes,
 	}
 	program.schedule = probeschedule.NewSchedule(program.store, logger)
 	defer program.schedule.Stop()
@@ -103,14 +110,15 @@ func Run(ctx context.Context, arguments []string, settings ProgramSettings) erro
 }
 
 type exporterProgram struct {
-	logger            *slog.Logger
-	configurationFile string
-	probers           *proberSet
-	store             *proberesults.ResultStore
-	schedule          *probeschedule.Schedule
-	ownRegistry       *prometheus.Registry
-	reloadSuccessful  prometheus.Gauge
-	reloadSucceededAt prometheus.Gauge
+	logger              *slog.Logger
+	configurationFile   string
+	probers             *proberSet
+	store               *proberesults.ResultStore
+	schedule            *probeschedule.Schedule
+	ownRegistry         *prometheus.Registry
+	maxConcurrentProbes int
+	reloadSuccessful    prometheus.Gauge
+	reloadSucceededAt   prometheus.Gauge
 }
 
 func (program *exporterProgram) registerOwnSeries() {
@@ -136,7 +144,7 @@ func (program *exporterProgram) load() error {
 		var probes []probeschedule.Probe
 		probes, err = program.probers.probes(configuration)
 		if err == nil {
-			program.schedule.Apply(probes, configuration.MaxConcurrentProbes)
+			program.schedule.Apply(probes, program.maxConcurrentProbes)
 		}
 	}
 	if err != nil {

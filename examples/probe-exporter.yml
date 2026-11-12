@@ -1,39 +1,54 @@
 # yaml-language-server: $schema=../schemas/probe-exporter-v1.0.schema.json
 version: "1"
 
-probes:
-  tls_connect:
-    prober: tcp
-    timeout: 10s
+probers:
+  certificate:
     interval: 5m
-    tcp:
-      preferred_ip_protocol: ip4
-      tls: true
-    target_groups:
-      by-name:
-        targets:
-          - name: api.example.com
-            addresses: [api.example.com:443]
-          - name: www.example.com
-            addresses: [www.example.com:443]
-      mock-cdn:
-        targets:
-          - name: api.example.com
-            addresses: [192.0.2.10:443, 192.0.2.11:443]
-          - name: www.example.com
-            addresses: [192.0.2.10:443]
-        labels:
-          site: mock-cdn
-  domain_registration:
-    prober: rdap
     timeout: 10s
+    ports: [443]
+  dns:
+    interval: 1m
+    timeout: 5s
+  domain_registration:
     interval: 6h
-    target_groups:
-      registered-domains:
-        targets:
-          - name: example.com
-            addresses: [example.com]
-          - name: example.org
-            addresses: [example.org]
+    timeout: 10s
+  http:
+    interval: 1m
+    timeout: 10s
+    ports: [443]
+    path: /healthz
+    status_codes: [200]
+  ping:
+    interval: 1m
+    timeout: 5s
+  tcp:
+    interval: 1m
+    timeout: 5s
+    ports: [5432]
 
-max_concurrent_probes: 8
+probe_targets:
+  example.com:
+    probers: [domain_registration]
+  example.org:
+    probers: [domain_registration]
+  mock-cdn:
+    addresses: [mock-cdn.example.net]
+    probers: [certificate, http]
+    serves:
+      - api.example.com
+      - static.example.com
+      - www.example.com
+  mock-database:
+    addresses: [192.0.2.20]
+    probers: [ping, tcp]
+  mock-dns-servers:
+    addresses: [192.0.2.53, 198.51.100.53]
+    probers: [dns]
+    serves: [api.example.com, www.example.com]
+  mock-web-servers:
+    addresses:
+      - 192.0.2.10
+      - 192.0.2.11
+      - 192.0.2.12
+    probers: [certificate, http, ping]
+    serves: [api.example.com, www.example.org]

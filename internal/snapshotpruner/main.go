@@ -24,7 +24,7 @@ func run(ctx context.Context, arguments []string, token string, output io.Writer
 	apiURL, registryURL string, now time.Time) error {
 	flags := flag.NewFlagSet("snapshotpruner", flag.ContinueOnError)
 	flags.SetOutput(output)
-	owner := flags.String("owner", "", "the organization owning the package")
+	owner := flags.String("owner", "", "the personal account owning the package")
 	packageName := flags.String("package", "", "the container package")
 	maxAgeDays := flags.Int("max-age-days", 0, "how many days a snapshot image is kept")
 	dryRun := flags.Bool("dry-run", false, "name the images it would delete, deleting none")

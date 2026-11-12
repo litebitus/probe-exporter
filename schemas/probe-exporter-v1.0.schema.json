@@ -2,13 +2,13 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://github.com/litebitus/probe-exporter/schemas/probe-exporter-v1.0.schema.json",
   "title": "probe-exporter configuration v1.0",
-  "description": "What the exporter probes: its probes, each a prober with its settings, how often it runs and its targets, and how many runs happen at once.",
+  "description": "What the exporter probes: its targets, each with the probers that check it, and each prober's settings.",
   "type": "object",
   "additionalProperties": false,
   "required": [
     "version",
-    "probes",
-    "max_concurrent_probes"
+    "probers",
+    "probe_targets"
   ],
   "properties": {
     "version": {
@@ -18,18 +18,48 @@
         "1.0"
       ]
     },
-    "probes": {
-      "description": "Probe name to the probe: a prober with its settings, how often it runs, and its targets.",
+    "probers": {
+      "description": "Prober name to its settings.",
       "type": "object",
+      "additionalProperties": false,
       "minProperties": 1,
-      "additionalProperties": {
-        "$ref": "#/$defs/probe"
+      "properties": {
+        "certificate": {
+          "description": "Settings of the `certificate` prober, which checks the certificate a target presents for each host it serves.",
+          "$ref": "#/$defs/certificate_settings"
+        },
+        "dns": {
+          "description": "Settings of the `dns` prober, which asks a target, a DNS server, for each host it serves.",
+          "$ref": "#/$defs/check_timing"
+        },
+        "domain_registration": {
+          "description": "Settings of the `domain_registration` prober, which reads when a domain's registration expires.",
+          "$ref": "#/$defs/check_timing"
+        },
+        "http": {
+          "description": "Settings of the `http` prober, which requests a path from a target for each host it serves.",
+          "$ref": "#/$defs/http_settings"
+        },
+        "ping": {
+          "description": "Settings of the `ping` prober, which pings a target.",
+          "$ref": "#/$defs/check_timing"
+        },
+        "tcp": {
+          "description": "Settings of the `tcp` prober, which connects to a target's ports.",
+          "$ref": "#/$defs/tcp_settings"
+        }
       }
     },
-    "max_concurrent_probes": {
-      "description": "How many runs happen at once, across every probe.",
-      "type": "integer",
-      "minimum": 1
+    "probe_targets": {
+      "description": "Target name to the target: what is probed, and the probers that check it.",
+      "type": "object",
+      "minProperties": 1,
+      "propertyNames": {
+        "$ref": "#/$defs/target_name"
+      },
+      "additionalProperties": {
+        "$ref": "#/$defs/probe_target"
+      }
     }
   },
   "$defs": {
@@ -38,1614 +68,238 @@
       "type": "string",
       "pattern": "^([0-9]+(\\.[0-9]+)?(ns|us|µs|ms|s|m|h))+$"
     },
-    "probe": {
+    "target_name": {
+      "description": "A target's name, such as `mock-alb` or `example.com`.",
+      "type": "string",
+      "pattern": "^[A-Za-z0-9]([A-Za-z0-9._-]*[A-Za-z0-9])?$"
+    },
+    "host_name": {
+      "description": "A host name without a wildcard, such as `www.example.com`.",
+      "type": "string",
+      "pattern": "^[A-Za-z0-9_]([A-Za-z0-9_-]*[A-Za-z0-9_])?(\\.[A-Za-z0-9_]([A-Za-z0-9_-]*[A-Za-z0-9_])?)*\\.?$"
+    },
+    "address": {
+      "description": "A host without a port, such as `www.example.com`, `192.0.2.10` or `2001:db8::1`.",
+      "type": "string",
+      "pattern": "^([A-Za-z0-9_]([A-Za-z0-9_-]*[A-Za-z0-9_])?(\\.[A-Za-z0-9_]([A-Za-z0-9_-]*[A-Za-z0-9_])?)*\\.?|[0-9A-Fa-f.]*:[0-9A-Fa-f.]*:[0-9A-Fa-f:.]*(%[A-Za-z0-9_.-]+)?)$"
+    },
+    "interval": {
+      "description": "How often the prober checks each target.",
+      "$ref": "#/$defs/duration"
+    },
+    "timeout": {
+      "description": "How long one check may take.",
+      "$ref": "#/$defs/duration"
+    },
+    "ports": {
+      "description": "The ports the prober connects to, such as `443`.",
+      "type": "array",
+      "minItems": 1,
+      "uniqueItems": true,
+      "items": {
+        "type": "integer",
+        "minimum": 1,
+        "maximum": 65535
+      }
+    },
+    "check_timing": {
       "type": "object",
+      "additionalProperties": false,
       "required": [
-        "prober",
-        "timeout",
         "interval",
-        "target_groups"
+        "timeout"
       ],
       "properties": {
-        "prober": {
-          "description": "The kind of check: `rdap`, the exporter's own, or one of blackbox_exporter's.",
-          "enum": [
-            "dns",
-            "grpc",
-            "http",
-            "icmp",
-            "rdap",
-            "tcp",
-            "unix",
-            "websocket"
-          ]
+        "interval": {
+          "$ref": "#/$defs/interval"
         },
         "timeout": {
-          "description": "How long a run may take.",
-          "$ref": "#/$defs/duration"
-        },
+          "$ref": "#/$defs/timeout"
+        }
+      }
+    },
+    "certificate_settings": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "interval",
+        "timeout",
+        "ports"
+      ],
+      "properties": {
         "interval": {
-          "description": "How often the probe runs against each target.",
-          "$ref": "#/$defs/duration"
+          "$ref": "#/$defs/interval"
         },
-        "target_groups": {
-          "description": "Group name to the group: its targets and the labels they share.",
-          "type": "object",
-          "minProperties": 1
+        "timeout": {
+          "$ref": "#/$defs/timeout"
         },
-        "dns": {
-          "description": "blackbox_exporter's settings for the `dns` prober.",
-          "$ref": "#/$defs/blackbox_dns_probe"
+        "ports": {
+          "$ref": "#/$defs/ports"
+        }
+      }
+    },
+    "http_settings": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "interval",
+        "timeout",
+        "ports",
+        "path",
+        "status_codes"
+      ],
+      "properties": {
+        "interval": {
+          "$ref": "#/$defs/interval"
         },
-        "grpc": {
-          "description": "blackbox_exporter's settings for the `grpc` prober.",
-          "$ref": "#/$defs/blackbox_grpc_probe"
+        "timeout": {
+          "$ref": "#/$defs/timeout"
         },
-        "http": {
-          "description": "blackbox_exporter's settings for the `http` prober.",
-          "$ref": "#/$defs/blackbox_http_probe"
+        "ports": {
+          "$ref": "#/$defs/ports"
         },
-        "icmp": {
-          "description": "blackbox_exporter's settings for the `icmp` prober.",
-          "$ref": "#/$defs/blackbox_icmp_probe"
+        "path": {
+          "description": "The path requested, such as `/healthz`.",
+          "type": "string",
+          "pattern": "^/"
         },
-        "tcp": {
-          "description": "blackbox_exporter's settings for the `tcp` prober.",
-          "$ref": "#/$defs/blackbox_tcp_probe"
+        "status_codes": {
+          "description": "The status codes that answer the request successfully, such as `200`.",
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": {
+            "type": "integer",
+            "minimum": 100,
+            "maximum": 599
+          }
+        }
+      }
+    },
+    "tcp_settings": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "interval",
+        "timeout",
+        "ports"
+      ],
+      "properties": {
+        "interval": {
+          "$ref": "#/$defs/interval"
         },
-        "unix": {
-          "description": "blackbox_exporter's settings for the `unix` prober.",
-          "$ref": "#/$defs/blackbox_unix_probe"
+        "timeout": {
+          "$ref": "#/$defs/timeout"
         },
-        "websocket": {
-          "description": "blackbox_exporter's settings for the `websocket` prober.",
-          "$ref": "#/$defs/blackbox_websocket_probe"
+        "ports": {
+          "$ref": "#/$defs/ports"
+        }
+      }
+    },
+    "probe_target": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "probers"
+      ],
+      "properties": {
+        "probers": {
+          "description": "The probers that check the target.",
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": {
+            "enum": [
+              "certificate",
+              "dns",
+              "domain_registration",
+              "http",
+              "ping",
+              "tcp"
+            ]
+          }
+        },
+        "addresses": {
+          "description": "Where the target is reached, such as `www.example.com` or `192.0.2.10`.",
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": {
+            "$ref": "#/$defs/address"
+          }
+        },
+        "serves": {
+          "description": "The hosts the target serves, such as `www.example.com`.",
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": {
+            "$ref": "#/$defs/host_name"
+          }
         }
       },
       "allOf": [
         {
           "if": {
-            "required": [
-              "prober"
-            ],
             "properties": {
-              "prober": {
-                "const": "dns"
+              "probers": {
+                "contains": {
+                  "enum": [
+                    "certificate",
+                    "dns",
+                    "http",
+                    "ping",
+                    "tcp"
+                  ]
+                }
               }
             }
           },
           "then": {
-            "propertyNames": {
-              "enum": [
-                "prober",
-                "timeout",
-                "interval",
-                "target_groups",
-                "dns"
-              ]
-            },
-            "properties": {
-              "target_groups": {
-                "additionalProperties": {
-                  "$ref": "#/$defs/dns_target_group"
-                }
-              }
-            },
-            "allOf": [
-              {
-                "properties": {
-                  "dns": {
-                    "not": {
-                      "description": "A `dns` probe's targets each state the `name` asked, so its settings state no `query_name`.",
-                      "required": [
-                        "query_name"
-                      ]
-                    }
-                  }
-                }
-              }
+            "required": [
+              "addresses"
             ]
+          },
+          "else": {
+            "properties": {
+              "addresses": {
+                "not": {
+                  "description": "A target is given `addresses` only when a prober checking it connects to it."
+                }
+              }
+            }
           }
         },
         {
           "if": {
-            "required": [
-              "prober"
-            ],
             "properties": {
-              "prober": {
-                "const": "grpc"
+              "probers": {
+                "contains": {
+                  "enum": [
+                    "certificate",
+                    "dns",
+                    "http"
+                  ]
+                }
               }
             }
           },
           "then": {
-            "propertyNames": {
-              "enum": [
-                "prober",
-                "timeout",
-                "interval",
-                "target_groups",
-                "grpc"
-              ]
-            },
-            "properties": {
-              "target_groups": {
-                "additionalProperties": {
-                  "$ref": "#/$defs/grpc_target_group"
-                }
-              }
-            },
-            "allOf": [
-              {
-                "properties": {
-                  "grpc": {
-                    "properties": {
-                      "tls_config": {
-                        "not": {
-                          "description": "A `grpc` probe's targets each state the `name` sent as the TLS server name, so its `tls_config` states no `server_name`.",
-                          "required": [
-                            "server_name"
-                          ]
-                        }
-                      }
-                    }
-                  }
-                }
-              }
+            "required": [
+              "serves"
             ]
-          }
-        },
-        {
-          "if": {
-            "required": [
-              "prober"
-            ],
-            "properties": {
-              "prober": {
-                "const": "http"
-              }
-            }
           },
-          "then": {
-            "propertyNames": {
-              "enum": [
-                "prober",
-                "timeout",
-                "interval",
-                "target_groups",
-                "http"
-              ]
-            },
+          "else": {
             "properties": {
-              "target_groups": {
-                "additionalProperties": {
-                  "$ref": "#/$defs/http_target_group"
-                }
-              }
-            },
-            "allOf": [
-              {
-                "properties": {
-                  "http": {
-                    "properties": {
-                      "headers": {
-                        "propertyNames": {
-                          "not": {
-                            "description": "An `http` probe's targets each state the `name` sent as the `Host` header, so its `headers` state no `Host`.",
-                            "pattern": "^[Hh][Oo][Ss][Tt]$"
-                          }
-                        }
-                      }
-                    }
-                  }
-                }
-              }
-            ]
-          }
-        },
-        {
-          "if": {
-            "required": [
-              "prober"
-            ],
-            "properties": {
-              "prober": {
-                "const": "icmp"
-              }
-            }
-          },
-          "then": {
-            "propertyNames": {
-              "enum": [
-                "prober",
-                "timeout",
-                "interval",
-                "target_groups",
-                "icmp"
-              ]
-            },
-            "properties": {
-              "target_groups": {
-                "additionalProperties": {
-                  "$ref": "#/$defs/icmp_target_group"
-                }
-              }
-            }
-          }
-        },
-        {
-          "if": {
-            "required": [
-              "prober"
-            ],
-            "properties": {
-              "prober": {
-                "const": "rdap"
-              }
-            }
-          },
-          "then": {
-            "propertyNames": {
-              "enum": [
-                "prober",
-                "timeout",
-                "interval",
-                "target_groups"
-              ]
-            },
-            "properties": {
-              "target_groups": {
-                "additionalProperties": {
-                  "$ref": "#/$defs/rdap_target_group"
-                }
-              }
-            }
-          }
-        },
-        {
-          "if": {
-            "required": [
-              "prober"
-            ],
-            "properties": {
-              "prober": {
-                "const": "tcp"
-              }
-            }
-          },
-          "then": {
-            "propertyNames": {
-              "enum": [
-                "prober",
-                "timeout",
-                "interval",
-                "target_groups",
-                "tcp"
-              ]
-            },
-            "properties": {
-              "target_groups": {
-                "additionalProperties": {
-                  "$ref": "#/$defs/tcp_target_group"
-                }
-              }
-            },
-            "allOf": [
-              {
-                "properties": {
-                  "tcp": {
-                    "properties": {
-                      "tls_config": {
-                        "not": {
-                          "description": "A `tcp` probe's targets each state the `name` sent as the TLS server name, so its `tls_config` states no `server_name`.",
-                          "required": [
-                            "server_name"
-                          ]
-                        }
-                      }
-                    }
-                  }
-                }
-              }
-            ]
-          }
-        },
-        {
-          "if": {
-            "required": [
-              "prober"
-            ],
-            "properties": {
-              "prober": {
-                "const": "unix"
-              }
-            }
-          },
-          "then": {
-            "propertyNames": {
-              "enum": [
-                "prober",
-                "timeout",
-                "interval",
-                "target_groups",
-                "unix"
-              ]
-            },
-            "properties": {
-              "target_groups": {
-                "additionalProperties": {
-                  "$ref": "#/$defs/unix_target_group"
-                }
-              }
-            }
-          }
-        },
-        {
-          "if": {
-            "required": [
-              "prober"
-            ],
-            "properties": {
-              "prober": {
-                "const": "websocket"
-              }
-            }
-          },
-          "then": {
-            "propertyNames": {
-              "enum": [
-                "prober",
-                "timeout",
-                "interval",
-                "target_groups",
-                "websocket"
-              ]
-            },
-            "properties": {
-              "target_groups": {
-                "additionalProperties": {
-                  "$ref": "#/$defs/websocket_target_group"
+              "serves": {
+                "not": {
+                  "description": "A target is given `serves` only when a prober checking it asks for its hosts."
                 }
               }
             }
           }
         }
       ]
-    },
-    "name": {
-      "type": "string",
-      "pattern": "^[A-Za-z0-9_]([A-Za-z0-9_-]*[A-Za-z0-9_])?(\\.[A-Za-z0-9_]([A-Za-z0-9_-]*[A-Za-z0-9_])?)*\\.?$"
-    },
-    "labels": {
-      "description": "Labels every series of the group's targets carries.",
-      "type": "object",
-      "propertyNames": {
-        "pattern": "^[a-zA-Z_][a-zA-Z0-9_]*$",
-        "not": {
-          "anyOf": [
-            {
-              "pattern": "^__"
-            },
-            {
-              "enum": [
-                "address",
-                "name",
-                "probe",
-                "target_group"
-              ]
-            }
-          ]
-        }
-      },
-      "additionalProperties": {
-        "type": "string"
-      }
-    },
-    "host_and_port": {
-      "description": "A host and its port, such as `www.example.com:443`, `192.0.2.10:443` or `[2001:db8::1]:443`.",
-      "type": "string",
-      "pattern": "^([A-Za-z0-9_]([A-Za-z0-9_-]*[A-Za-z0-9_])?(\\.[A-Za-z0-9_]([A-Za-z0-9_-]*[A-Za-z0-9_])?)*\\.?|\\[[0-9A-Fa-f.]*:[0-9A-Fa-f:.]*(%[A-Za-z0-9_.-]+)?\\]):(6553[0-5]|655[0-2][0-9]|65[0-4][0-9]{2}|6[0-4][0-9]{3}|[1-5][0-9]{4}|[1-9][0-9]{0,3})$"
-    },
-    "host": {
-      "description": "A host without a port, such as `www.example.com`, `192.0.2.10` or `2001:db8::1`.",
-      "type": "string",
-      "pattern": "^([A-Za-z0-9_]([A-Za-z0-9_-]*[A-Za-z0-9_])?(\\.[A-Za-z0-9_]([A-Za-z0-9_-]*[A-Za-z0-9_])?)*\\.?|[0-9A-Fa-f.]*:[0-9A-Fa-f:.]*(%[A-Za-z0-9_.-]+)?)$"
-    },
-    "dns_server": {
-      "description": "A DNS server, its port optional, such as `192.0.2.53` or `192.0.2.53:5353`.",
-      "type": "string",
-      "pattern": "^([A-Za-z0-9_]([A-Za-z0-9_-]*[A-Za-z0-9_])?(\\.[A-Za-z0-9_]([A-Za-z0-9_-]*[A-Za-z0-9_])?)*\\.?|[0-9A-Fa-f.]*:[0-9A-Fa-f:.]*(%[A-Za-z0-9_.-]+)?|([A-Za-z0-9_]([A-Za-z0-9_-]*[A-Za-z0-9_])?(\\.[A-Za-z0-9_]([A-Za-z0-9_-]*[A-Za-z0-9_])?)*\\.?|\\[[0-9A-Fa-f.]*:[0-9A-Fa-f:.]*(%[A-Za-z0-9_.-]+)?\\]):(6553[0-5]|655[0-2][0-9]|65[0-4][0-9]{2}|6[0-4][0-9]{3}|[1-5][0-9]{4}|[1-9][0-9]{0,3}))$"
-    },
-    "http_url": {
-      "description": "An `http` or `https` URL, such as `https://www.example.com/healthz`.",
-      "type": "string",
-      "pattern": "^https?://([A-Za-z0-9_]([A-Za-z0-9_-]*[A-Za-z0-9_])?(\\.[A-Za-z0-9_]([A-Za-z0-9_-]*[A-Za-z0-9_])?)*\\.?|\\[[0-9A-Fa-f.]*:[0-9A-Fa-f:.]*(%[A-Za-z0-9_.-]+)?\\])(:(6553[0-5]|655[0-2][0-9]|65[0-4][0-9]{2}|6[0-4][0-9]{3}|[1-5][0-9]{4}|[1-9][0-9]{0,3}))?([/?#].*)?$"
-    },
-    "websocket_url": {
-      "description": "A `ws` or `wss` URL, such as `wss://www.example.com/socket`.",
-      "type": "string",
-      "pattern": "^wss?://([A-Za-z0-9_]([A-Za-z0-9_-]*[A-Za-z0-9_])?(\\.[A-Za-z0-9_]([A-Za-z0-9_-]*[A-Za-z0-9_])?)*\\.?|\\[[0-9A-Fa-f.]*:[0-9A-Fa-f:.]*(%[A-Za-z0-9_.-]+)?\\])(:(6553[0-5]|655[0-2][0-9]|65[0-4][0-9]{2}|6[0-4][0-9]{3}|[1-5][0-9]{4}|[1-9][0-9]{0,3}))?([/?#].*)?$"
-    },
-    "socket_path": {
-      "description": "An absolute path to a Unix socket, such as `/run/mock.sock`.",
-      "type": "string",
-      "pattern": "^/.*$"
-    },
-    "domain_name": {
-      "description": "A domain name, such as `example.com`.",
-      "type": "string",
-      "pattern": "^([A-Za-z0-9]([A-Za-z0-9-]*[A-Za-z0-9])?\\.)+[A-Za-z0-9]([A-Za-z0-9-]*[A-Za-z0-9])?\\.?$"
-    },
-    "dns_target": {
-      "description": "A name, and the addresses it is checked at, one run per address.",
-      "type": "object",
-      "required": [
-        "name",
-        "addresses"
-      ],
-      "additionalProperties": false,
-      "properties": {
-        "name": {
-          "description": "The name each server is asked, such as `www.example.com`.",
-          "$ref": "#/$defs/name"
-        },
-        "addresses": {
-          "description": "Where the target's runs connect, each a DNS server, its port optional, such as `192.0.2.53` or `192.0.2.53:5353`.",
-          "type": "array",
-          "minItems": 1,
-          "uniqueItems": true,
-          "items": {
-            "$ref": "#/$defs/dns_server"
-          }
-        }
-      }
-    },
-    "dns_target_group": {
-      "description": "Targets of a `dns` probe and the labels they share.",
-      "type": "object",
-      "required": [
-        "targets"
-      ],
-      "additionalProperties": false,
-      "properties": {
-        "targets": {
-          "description": "The targets, each a name and the addresses it is checked at.",
-          "type": "array",
-          "minItems": 1,
-          "items": {
-            "$ref": "#/$defs/dns_target"
-          }
-        },
-        "labels": {
-          "$ref": "#/$defs/labels"
-        }
-      }
-    },
-    "grpc_target": {
-      "description": "A name, and the addresses it is checked at, one run per address.",
-      "type": "object",
-      "required": [
-        "name",
-        "addresses"
-      ],
-      "additionalProperties": false,
-      "properties": {
-        "name": {
-          "description": "The name sent as the TLS server name, such as `www.example.com`.",
-          "$ref": "#/$defs/name"
-        },
-        "addresses": {
-          "description": "Where the target's runs connect, each a host and its port, such as `www.example.com:443`, `192.0.2.10:443` or `[2001:db8::1]:443`.",
-          "type": "array",
-          "minItems": 1,
-          "uniqueItems": true,
-          "items": {
-            "$ref": "#/$defs/host_and_port"
-          }
-        }
-      }
-    },
-    "grpc_target_group": {
-      "description": "Targets of a `grpc` probe and the labels they share.",
-      "type": "object",
-      "required": [
-        "targets"
-      ],
-      "additionalProperties": false,
-      "properties": {
-        "targets": {
-          "description": "The targets, each a name and the addresses it is checked at.",
-          "type": "array",
-          "minItems": 1,
-          "items": {
-            "$ref": "#/$defs/grpc_target"
-          }
-        },
-        "labels": {
-          "$ref": "#/$defs/labels"
-        }
-      }
-    },
-    "http_target": {
-      "description": "A name, and the addresses it is checked at, one run per address.",
-      "type": "object",
-      "required": [
-        "name",
-        "addresses"
-      ],
-      "additionalProperties": false,
-      "properties": {
-        "name": {
-          "description": "The name sent as the `Host` header, such as `www.example.com`.",
-          "$ref": "#/$defs/name"
-        },
-        "addresses": {
-          "description": "Where the target's runs connect, each an `http` or `https` URL, such as `https://www.example.com/healthz`.",
-          "type": "array",
-          "minItems": 1,
-          "uniqueItems": true,
-          "items": {
-            "$ref": "#/$defs/http_url"
-          }
-        }
-      }
-    },
-    "http_target_group": {
-      "description": "Targets of a `http` probe and the labels they share.",
-      "type": "object",
-      "required": [
-        "targets"
-      ],
-      "additionalProperties": false,
-      "properties": {
-        "targets": {
-          "description": "The targets, each a name and the addresses it is checked at.",
-          "type": "array",
-          "minItems": 1,
-          "items": {
-            "$ref": "#/$defs/http_target"
-          }
-        },
-        "labels": {
-          "$ref": "#/$defs/labels"
-        }
-      }
-    },
-    "icmp_target": {
-      "description": "A name, and the addresses it is checked at, one run per address.",
-      "type": "object",
-      "required": [
-        "name",
-        "addresses"
-      ],
-      "additionalProperties": false,
-      "properties": {
-        "name": {
-          "description": "The name the target's series carry, such as `www.example.com`.",
-          "$ref": "#/$defs/name"
-        },
-        "addresses": {
-          "description": "Where the target's runs connect, each a host without a port, such as `www.example.com`, `192.0.2.10` or `2001:db8::1`.",
-          "type": "array",
-          "minItems": 1,
-          "uniqueItems": true,
-          "items": {
-            "$ref": "#/$defs/host"
-          }
-        }
-      }
-    },
-    "icmp_target_group": {
-      "description": "Targets of a `icmp` probe and the labels they share.",
-      "type": "object",
-      "required": [
-        "targets"
-      ],
-      "additionalProperties": false,
-      "properties": {
-        "targets": {
-          "description": "The targets, each a name and the addresses it is checked at.",
-          "type": "array",
-          "minItems": 1,
-          "items": {
-            "$ref": "#/$defs/icmp_target"
-          }
-        },
-        "labels": {
-          "$ref": "#/$defs/labels"
-        }
-      }
-    },
-    "rdap_target": {
-      "description": "A name, and the addresses it is checked at, one run per address.",
-      "type": "object",
-      "required": [
-        "name",
-        "addresses"
-      ],
-      "additionalProperties": false,
-      "properties": {
-        "name": {
-          "description": "The name the target's series carry, such as `example.com`.",
-          "$ref": "#/$defs/name"
-        },
-        "addresses": {
-          "description": "Where the target's runs connect, each a domain name, such as `example.com`.",
-          "type": "array",
-          "minItems": 1,
-          "uniqueItems": true,
-          "items": {
-            "$ref": "#/$defs/domain_name"
-          }
-        }
-      }
-    },
-    "rdap_target_group": {
-      "description": "Targets of a `rdap` probe and the labels they share.",
-      "type": "object",
-      "required": [
-        "targets"
-      ],
-      "additionalProperties": false,
-      "properties": {
-        "targets": {
-          "description": "The targets, each a name and the addresses it is checked at.",
-          "type": "array",
-          "minItems": 1,
-          "items": {
-            "$ref": "#/$defs/rdap_target"
-          }
-        },
-        "labels": {
-          "$ref": "#/$defs/labels"
-        }
-      }
-    },
-    "tcp_target": {
-      "description": "A name, and the addresses it is checked at, one run per address.",
-      "type": "object",
-      "required": [
-        "name",
-        "addresses"
-      ],
-      "additionalProperties": false,
-      "properties": {
-        "name": {
-          "description": "The name sent as the TLS server name, such as `www.example.com`.",
-          "$ref": "#/$defs/name"
-        },
-        "addresses": {
-          "description": "Where the target's runs connect, each a host and its port, such as `www.example.com:443`, `192.0.2.10:443` or `[2001:db8::1]:443`.",
-          "type": "array",
-          "minItems": 1,
-          "uniqueItems": true,
-          "items": {
-            "$ref": "#/$defs/host_and_port"
-          }
-        }
-      }
-    },
-    "tcp_target_group": {
-      "description": "Targets of a `tcp` probe and the labels they share.",
-      "type": "object",
-      "required": [
-        "targets"
-      ],
-      "additionalProperties": false,
-      "properties": {
-        "targets": {
-          "description": "The targets, each a name and the addresses it is checked at.",
-          "type": "array",
-          "minItems": 1,
-          "items": {
-            "$ref": "#/$defs/tcp_target"
-          }
-        },
-        "labels": {
-          "$ref": "#/$defs/labels"
-        }
-      }
-    },
-    "unix_target": {
-      "description": "A name, and the addresses it is checked at, one run per address.",
-      "type": "object",
-      "required": [
-        "name",
-        "addresses"
-      ],
-      "additionalProperties": false,
-      "properties": {
-        "name": {
-          "description": "The name the target's series carry, such as `mock-service`.",
-          "$ref": "#/$defs/name"
-        },
-        "addresses": {
-          "description": "Where the target's runs connect, each an absolute path to a Unix socket, such as `/run/mock.sock`.",
-          "type": "array",
-          "minItems": 1,
-          "uniqueItems": true,
-          "items": {
-            "$ref": "#/$defs/socket_path"
-          }
-        }
-      }
-    },
-    "unix_target_group": {
-      "description": "Targets of a `unix` probe and the labels they share.",
-      "type": "object",
-      "required": [
-        "targets"
-      ],
-      "additionalProperties": false,
-      "properties": {
-        "targets": {
-          "description": "The targets, each a name and the addresses it is checked at.",
-          "type": "array",
-          "minItems": 1,
-          "items": {
-            "$ref": "#/$defs/unix_target"
-          }
-        },
-        "labels": {
-          "$ref": "#/$defs/labels"
-        }
-      }
-    },
-    "websocket_target": {
-      "description": "A name, and the addresses it is checked at, one run per address.",
-      "type": "object",
-      "required": [
-        "name",
-        "addresses"
-      ],
-      "additionalProperties": false,
-      "properties": {
-        "name": {
-          "description": "The name the target's series carry, such as `www.example.com`.",
-          "$ref": "#/$defs/name"
-        },
-        "addresses": {
-          "description": "Where the target's runs connect, each a `ws` or `wss` URL, such as `wss://www.example.com/socket`.",
-          "type": "array",
-          "minItems": 1,
-          "uniqueItems": true,
-          "items": {
-            "$ref": "#/$defs/websocket_url"
-          }
-        }
-      }
-    },
-    "websocket_target_group": {
-      "description": "Targets of a `websocket` probe and the labels they share.",
-      "type": "object",
-      "required": [
-        "targets"
-      ],
-      "additionalProperties": false,
-      "properties": {
-        "targets": {
-          "description": "The targets, each a name and the addresses it is checked at.",
-          "type": "array",
-          "minItems": 1,
-          "items": {
-            "$ref": "#/$defs/websocket_target"
-          }
-        },
-        "labels": {
-          "$ref": "#/$defs/labels"
-        }
-      }
-    },
-    "blackbox_dns_probe": {
-      "type": "object",
-      "properties": {
-        "preferred_ip_protocol": {
-          "description": "The IP protocol of the DNS probe (ip4, ip6). `ip6` by default.",
-          "enum": [
-            "ip4",
-            "ip6"
-          ]
-        },
-        "ip_protocol_fallback": {
-          "description": "`true` by default.",
-          "type": "boolean"
-        },
-        "dns_over_tls": {
-          "description": "Whether to use DNS over TLS. This only works with TCP. `false` by default.",
-          "type": "boolean"
-        },
-        "tls_config": {
-          "description": "Configuration for TLS protocol of DNS over TLS probe.",
-          "$ref": "#/$defs/blackbox_tls_config"
-        },
-        "source_ip_address": {
-          "description": "The source IP address.",
-          "type": "string"
-        },
-        "transport_protocol": {
-          "description": "udp, tcp. `udp` by default.",
-          "enum": [
-            "tcp",
-            "udp"
-          ]
-        },
-        "query_class": {
-          "description": "`IN` by default.",
-          "type": "string"
-        },
-        "query_name": {
-          "type": "string"
-        },
-        "query_type": {
-          "description": "`ANY` by default.",
-          "type": "string"
-        },
-        "recursion_desired": {
-          "description": "Set the recursion desired (RD) flag in the request. `true` by default.",
-          "type": "boolean"
-        },
-        "valid_rcodes": {
-          "description": "List of valid response codes.",
-          "type": "array",
-          "items": {
-            "type": "string"
-          }
-        },
-        "validate_answer_rrs": {
-          "$ref": "#/$defs/blackbox_dnsrr_validator"
-        },
-        "validate_authority_rrs": {
-          "$ref": "#/$defs/blackbox_dnsrr_validator"
-        },
-        "validate_additional_rrs": {
-          "$ref": "#/$defs/blackbox_dnsrr_validator"
-        }
-      },
-      "additionalProperties": false
-    },
-    "blackbox_tls_config": {
-      "type": "object",
-      "properties": {
-        "ca": {
-          "description": "Text of the CA cert to use for the targets. It is mutually exclusive with `ca_file`.",
-          "type": "string"
-        },
-        "cert": {
-          "description": "Text of the client cert for the targets. It is mutually exclusive with `cert_file`.",
-          "type": "string"
-        },
-        "key": {
-          "description": "Text of the client key for the targets. It is mutually exclusive with `key_file`.",
-          "type": "string"
-        },
-        "ca_file": {
-          "description": "The CA cert to use for the targets.",
-          "type": "string"
-        },
-        "cert_file": {
-          "description": "The client cert file for the targets.",
-          "type": "string"
-        },
-        "key_file": {
-          "description": "The client key file for the targets.",
-          "type": "string"
-        },
-        "ca_ref": {
-          "type": "string"
-        },
-        "cert_ref": {
-          "type": "string"
-        },
-        "key_ref": {
-          "type": "string"
-        },
-        "server_name": {
-          "description": "Used to verify the hostname for the targets.",
-          "type": "string"
-        },
-        "insecure_skip_verify": {
-          "description": "Disable target certificate validation. `false` by default.",
-          "type": "boolean"
-        },
-        "min_version": {
-          "description": "Minimum acceptable TLS version. Accepted values: TLS10 (TLS 1.0), TLS11 (TLS 1.1), TLS12 (TLS 1.2), TLS13 (TLS 1.3). If unset, Prometheus will use Go default minimum version, which is TLS 1.2. See MinVersion in https://pkg.go.dev/crypto/tls#Config.",
-          "enum": [
-            "TLS10",
-            "TLS11",
-            "TLS12",
-            "TLS13"
-          ]
-        },
-        "max_version": {
-          "description": "Maximum acceptable TLS version. Accepted values: TLS10 (TLS 1.0), TLS11 (TLS 1.1), TLS12 (TLS 1.2), TLS13 (TLS 1.3). Can be used to test for the presence of insecure TLS versions. If unset, Prometheus will use Go default maximum version, which is TLS 1.3. See MaxVersion in https://pkg.go.dev/crypto/tls#Config.",
-          "enum": [
-            "TLS10",
-            "TLS11",
-            "TLS12",
-            "TLS13"
-          ]
-        }
-      },
-      "additionalProperties": false
-    },
-    "blackbox_dnsrr_validator": {
-      "type": "object",
-      "properties": {
-        "fail_if_matches_regexp": {
-          "type": "array",
-          "items": {
-            "type": "string"
-          }
-        },
-        "fail_if_all_match_regexp": {
-          "type": "array",
-          "items": {
-            "type": "string"
-          }
-        },
-        "fail_if_not_matches_regexp": {
-          "type": "array",
-          "items": {
-            "type": "string"
-          }
-        },
-        "fail_if_none_matches_regexp": {
-          "type": "array",
-          "items": {
-            "type": "string"
-          }
-        }
-      },
-      "additionalProperties": false
-    },
-    "blackbox_grpc_probe": {
-      "type": "object",
-      "properties": {
-        "service": {
-          "description": "The service name to query for health status.",
-          "type": "string"
-        },
-        "tls": {
-          "description": "Whether to connect to the endpoint with TLS. `false` by default.",
-          "type": "boolean"
-        },
-        "tls_config": {
-          "description": "Configuration for TLS protocol of gRPC probe.",
-          "$ref": "#/$defs/blackbox_tls_config"
-        },
-        "check_revoked": {
-          "description": "Check each certificate in the TLS chain against its CRL and emit probe_ssl_crl_* metrics. This only reports revocation state, it never fails the probe: a revoked certificate or an unreachable CRL leaves probe_success untouched. Alert on the metrics instead. Requires tls to be true. `false` by default.",
-          "type": "boolean"
-        },
-        "ip_protocol_fallback": {
-          "description": "`true` by default.",
-          "type": "boolean"
-        },
-        "preferred_ip_protocol": {
-          "description": "The IP protocol of the gRPC probe (ip4, ip6). `ip6` by default.",
-          "enum": [
-            "ip4",
-            "ip6"
-          ]
-        },
-        "metadata": {
-          "description": "gRPC client metadata",
-          "type": "object",
-          "additionalProperties": {
-            "type": "array",
-            "items": {
-              "type": "string"
-            }
-          }
-        }
-      },
-      "additionalProperties": false
-    },
-    "blackbox_http_probe": {
-      "type": "object",
-      "properties": {
-        "valid_status_codes": {
-          "description": "Accepted status codes for this probe. List between square brackets. Defaults to 2xx. `2xx` by default.",
-          "type": "array",
-          "items": {
-            "type": "integer"
-          }
-        },
-        "valid_http_versions": {
-          "description": "Accepted HTTP versions for this probe.",
-          "type": "array",
-          "items": {
-            "type": "string"
-          }
-        },
-        "preferred_ip_protocol": {
-          "description": "The IP protocol of the HTTP probe (ip4, ip6). `ip6` by default.",
-          "enum": [
-            "ip4",
-            "ip6"
-          ]
-        },
-        "ip_protocol_fallback": {
-          "description": "`true` by default.",
-          "type": "boolean"
-        },
-        "skip_resolve_phase_with_proxy": {
-          "description": "Skip DNS resolution and URL change when an HTTP proxy (proxy_url or proxy_from_environment) is set. `false` by default.",
-          "type": "boolean"
-        },
-        "no_follow_redirects": {
-          "type": "boolean"
-        },
-        "fail_if_ssl": {
-          "description": "Probe fails if SSL is present. `false` by default.",
-          "type": "boolean"
-        },
-        "fail_if_not_ssl": {
-          "description": "Probe fails if SSL is not present. `false` by default.",
-          "type": "boolean"
-        },
-        "method": {
-          "description": "The HTTP method the probe will use. `GET` by default.",
-          "type": "string"
-        },
-        "headers": {
-          "description": "The HTTP headers set for the probe.",
-          "type": "object",
-          "additionalProperties": {
-            "type": "string"
-          }
-        },
-        "fail_if_body_matches_regexp": {
-          "description": "Probe fails if response body matches regex.",
-          "type": "array",
-          "items": {
-            "type": "string",
-            "format": "regex"
-          }
-        },
-        "fail_if_body_not_matches_regexp": {
-          "description": "Probe fails if response body does not match regex.",
-          "type": "array",
-          "items": {
-            "type": "string",
-            "format": "regex"
-          }
-        },
-        "fail_if_body_json_matches_cel": {
-          "description": "Probe fails if response body JSON matches the CEL expression or if response is not JSON. See: https://github.com/google/cel-spec:",
-          "type": "string"
-        },
-        "fail_if_body_json_not_matches_cel": {
-          "description": "Probe fails if response body JSON does not match CEL expression or if response is not JSON. See: https://github.com/google/cel-spec:",
-          "type": "string"
-        },
-        "fail_if_header_matches": {
-          "description": "Probe fails if response header matches regex. For headers with multiple values, fails if *at least one* matches.",
-          "type": "array",
-          "items": {
-            "$ref": "#/$defs/blackbox_header_match"
-          }
-        },
-        "fail_if_header_not_matches": {
-          "description": "Probe fails if response header does not match regex. For headers with multiple values, fails if *none* match.",
-          "type": "array",
-          "items": {
-            "$ref": "#/$defs/blackbox_header_match"
-          }
-        },
-        "body": {
-          "description": "The body of the HTTP request used in probe.",
-          "type": "string"
-        },
-        "body_file": {
-          "description": "Read the HTTP request body from from a file. It is mutually exclusive with `body`.",
-          "type": "string"
-        },
-        "basic_auth": {
-          "description": "The HTTP basic authentication credentials.",
-          "$ref": "#/$defs/blackbox_basic_auth"
-        },
-        "authorization": {
-          "description": "Sets the `Authorization` header on every request with the configured credentials.",
-          "$ref": "#/$defs/blackbox_authorization"
-        },
-        "oauth2": {
-          "description": "OAuth 2.0 configuration to use to connect to the targets.",
-          "$ref": "#/$defs/blackbox_oauth2"
-        },
-        "bearer_token": {
-          "type": "string"
-        },
-        "bearer_token_file": {
-          "type": "string"
-        },
-        "tls_config": {
-          "description": "Configuration for TLS protocol of HTTP probe.",
-          "$ref": "#/$defs/blackbox_tls_config"
-        },
-        "follow_redirects": {
-          "description": "Whether or not the probe will follow any redirects. `true` by default.",
-          "type": "boolean"
-        },
-        "enable_http2": {
-          "description": "Whether to enable HTTP2. `true` by default.",
-          "type": "boolean"
-        },
-        "proxy_url": {
-          "description": "HTTP proxy server to use to connect to the targets.",
-          "type": "string",
-          "format": "uri"
-        },
-        "no_proxy": {
-          "description": "Comma-separated string that can contain IPs, CIDR notation, domain names that should be excluded from proxying. IP and domain names can contain port numbers.",
-          "type": "string"
-        },
-        "proxy_from_environment": {
-          "description": "Use proxy URL indicated by environment variables (HTTP_PROXY, https_proxy, HTTPs_PROXY, https_proxy, and no_proxy). `false` by default.",
-          "type": "boolean"
-        },
-        "proxy_connect_header": {
-          "description": "Specifies headers to send to proxies during CONNECT requests.",
-          "type": "object",
-          "additionalProperties": {
-            "type": "array",
-            "items": {
-              "type": "string"
-            }
-          }
-        },
-        "http_headers": {
-          "description": "Additional HTTP headers that can be injected into the request. Can be used with values, secrets or files. When multiple types or values are specified for a header, only the last one will be injected.",
-          "$ref": "#/$defs/blackbox_headers"
-        },
-        "compression": {
-          "description": "The compression algorithm to use to decompress the response (gzip, br, deflate, identity). If an \"Accept-Encoding\" header is specified, it MUST be such that the compression algorithm indicated using this option is acceptable. For example, you can use `compression: gzip` and `Accept-Encoding: br, gzip` or `Accept-Encoding: br;q=1.0, gzip;q=0.9`. The fact that gzip is acceptable with a lower quality than br does not invalidate the configuration, as you might be testing that the server does not return br-encoded content even if it's requested. On the other hand, `compression: gzip` and `Accept-Encoding: br, identity` is NOT a valid configuration, because you are asking for gzip to NOT be returned, and trying to decompress whatever the server returns is likely going to fail.",
-          "enum": [
-            "",
-            "br",
-            "deflate",
-            "gzip",
-            "identity"
-          ]
-        },
-        "body_size_limit": {
-          "description": "The maximum uncompressed body length in bytes that will be processed. A value of 0 means no limit. If the response includes a Content-Length header, it is NOT validated against this value. This setting is only meant to limit the amount of data that you are willing to read from the server. Example: 10MB. `0` by default.",
-          "type": "string",
-          "pattern": "^[0-9]+([KMGTPE]i?B|B)?$"
-        },
-        "enable_http3": {
-          "description": "Whether to enable HTTP3. Note: When enable_http3 is true, valid_http_versions must not include HTTP/2.0 as HTTP/3 and HTTP/2 cannot be used together. Additionally, when enable_http3 is true, enable_http2 must be set to false. `false` by default.",
-          "type": "boolean"
-        },
-        "check_revoked": {
-          "description": "Check each certificate in the TLS chain against its CRL and emit probe_ssl_crl_* metrics. This only reports revocation state, it never fails the probe: a revoked certificate or an unreachable CRL leaves probe_success untouched. Alert on the metrics instead. CRLs are fetched using the proxy settings configured below. `false` by default.",
-          "type": "boolean"
-        }
-      },
-      "additionalProperties": false
-    },
-    "blackbox_header_match": {
-      "type": "object",
-      "properties": {
-        "header": {
-          "type": "string"
-        },
-        "regexp": {
-          "type": "string",
-          "format": "regex"
-        },
-        "allow_missing": {
-          "description": "`false` by default.",
-          "type": "boolean"
-        }
-      },
-      "additionalProperties": false
-    },
-    "blackbox_basic_auth": {
-      "type": "object",
-      "properties": {
-        "username": {
-          "type": "string"
-        },
-        "username_file": {
-          "type": "string"
-        },
-        "username_ref": {
-          "type": "string"
-        },
-        "password": {
-          "type": "string"
-        },
-        "password_file": {
-          "type": "string"
-        },
-        "password_ref": {
-          "type": "string"
-        }
-      },
-      "additionalProperties": false
-    },
-    "blackbox_authorization": {
-      "type": "object",
-      "properties": {
-        "type": {
-          "description": "Sets the authentication type of the request. `Bearer` by default.",
-          "type": "string"
-        },
-        "credentials": {
-          "description": "Sets the credentials of the request. It is mutually exclusive with `credentials_file`.",
-          "type": "string"
-        },
-        "credentials_file": {
-          "description": "Sets the credentials of the request with the credentials read from the configured file. It is mutually exclusive with `credentials`.",
-          "type": "string"
-        },
-        "credentials_ref": {
-          "type": "string"
-        }
-      },
-      "additionalProperties": false
-    },
-    "blackbox_oauth2": {
-      "type": "object",
-      "properties": {
-        "client_id": {
-          "type": "string"
-        },
-        "client_secret": {
-          "description": "Used with the `client_credentials` grant type.",
-          "type": "string"
-        },
-        "client_secret_file": {
-          "description": "Read the client secret from a file. It is mutually exclusive with `client_secret`.",
-          "type": "string"
-        },
-        "client_secret_ref": {
-          "type": "string"
-        },
-        "client_certificate_key_id": {
-          "description": "Optional key ID, sent as the `kid` header of the JWT.",
-          "type": "string"
-        },
-        "client_certificate_key": {
-          "description": "Used with the `urn:ietf:params:oauth:grant-type:jwt-bearer` grant type. The PEM-encoded RSA private key used to sign the JWT assertion.",
-          "type": "string"
-        },
-        "client_certificate_key_file": {
-          "description": "Read the private key from a file. It is mutually exclusive with `client_certificate_key`.",
-          "type": "string"
-        },
-        "client_certificate_key_ref": {
-          "type": "string"
-        },
-        "grant_type": {
-          "description": "The OAuth2 grant type. One of `client_credentials` or `urn:ietf:params:oauth:grant-type:jwt-bearer`. `client_credentials` by default.",
-          "type": "string"
-        },
-        "signature_algorithm": {
-          "description": "The algorithm used to sign the JWT. One of RS256, RS384 or RS512. `RS256` by default.",
-          "type": "string"
-        },
-        "iss": {
-          "description": "The `iss` claim of the JWT. Defaults to `client_id`.",
-          "type": "string"
-        },
-        "audience": {
-          "description": "The `aud` claim of the JWT. Defaults to `token_url`.",
-          "type": "string"
-        },
-        "claims": {
-          "description": "Extra claims added to the JWT.",
-          "type": "object",
-          "additionalProperties": {}
-        },
-        "scopes": {
-          "description": "Scopes for the token request.",
-          "type": "array",
-          "items": {
-            "type": "string"
-          }
-        },
-        "token_url": {
-          "description": "The URL to fetch the token from.",
-          "type": "string"
-        },
-        "endpoint_params": {
-          "description": "Optional parameters to append to the token URL.",
-          "type": "object",
-          "additionalProperties": {
-            "type": "string"
-          }
-        },
-        "tls_config": {
-          "description": "Configures the token request's TLS settings, for example a client certificate for IdPs that authenticate the client with mutual TLS.",
-          "$ref": "#/$defs/blackbox_tls_config"
-        },
-        "proxy_url": {
-          "description": "HTTP proxy server to use to connect to the targets.",
-          "type": "string",
-          "format": "uri"
-        },
-        "no_proxy": {
-          "description": "Comma-separated string that can contain IPs, CIDR notation, domain names that should be excluded from proxying. IP and domain names can contain port numbers.",
-          "type": "string"
-        },
-        "proxy_from_environment": {
-          "description": "Use proxy URL indicated by environment variables (HTTP_PROXY, https_proxy, HTTPs_PROXY, https_proxy, and no_proxy). `false` by default.",
-          "type": "boolean"
-        },
-        "proxy_connect_header": {
-          "description": "Specifies headers to send to proxies during CONNECT requests.",
-          "type": "object",
-          "additionalProperties": {
-            "type": "array",
-            "items": {
-              "type": "string"
-            }
-          }
-        }
-      },
-      "additionalProperties": false
-    },
-    "blackbox_headers": {
-      "type": "object",
-      "additionalProperties": {
-        "$ref": "#/$defs/blackbox_header"
-      }
-    },
-    "blackbox_header": {
-      "type": "object",
-      "properties": {
-        "values": {
-          "type": "array",
-          "items": {
-            "type": "string"
-          }
-        },
-        "secrets": {
-          "type": "array",
-          "items": {
-            "type": "string"
-          }
-        },
-        "files": {
-          "type": "array",
-          "items": {
-            "type": "string"
-          }
-        }
-      },
-      "additionalProperties": false
-    },
-    "blackbox_icmp_probe": {
-      "type": "object",
-      "properties": {
-        "preferred_ip_protocol": {
-          "description": "The IP protocol of the ICMP probe (ip4, ip6). `ip6` by default.",
-          "enum": [
-            "ip4",
-            "ip6"
-          ]
-        },
-        "ip_protocol_fallback": {
-          "description": "`true` by default.",
-          "type": "boolean"
-        },
-        "source_ip_address": {
-          "description": "The source IP address.",
-          "type": "string"
-        },
-        "payload_size": {
-          "description": "The size of the payload.",
-          "type": "integer"
-        },
-        "dont_fragment": {
-          "description": "Set the DF-bit in the IP-header. Only works with ip4, on *nix systems and requires raw sockets (i.e. root or CAP_NET_RAW on Linux). `false` by default.",
-          "type": "boolean"
-        },
-        "ttl": {
-          "description": "TTL of outbound packets. Value must be in the range [0, 255]. Can be used to test reachability of a target within a given number of hops, for example, to determine when network routing has changed.",
-          "type": "integer"
-        }
-      },
-      "additionalProperties": false
-    },
-    "blackbox_tcp_probe": {
-      "type": "object",
-      "properties": {
-        "preferred_ip_protocol": {
-          "description": "The IP protocol of the TCP probe (ip4, ip6). `ip6` by default.",
-          "enum": [
-            "ip4",
-            "ip6"
-          ]
-        },
-        "ip_protocol_fallback": {
-          "description": "`true` by default.",
-          "type": "boolean"
-        },
-        "source_ip_address": {
-          "description": "The source IP address.",
-          "type": "string"
-        },
-        "query_response": {
-          "description": "The query sent in the TCP probe and the expected associated response. \"expect\" matches a regular expression; it is mutually exclusive with \"expect_bytes\". \"expect_bytes\" does exact byte-by-byte match; it is mutually exclusive with \"expect\". \"labels\" can define labels which will be exported on metric \"probe_expect_info\"; \"send\" sends some content; \"send\" and \"labels.value\" can contain values matched by \"expect\" (such as \"${1}\"); \"starttls\" upgrades TCP connection to TLS.",
-          "type": "array",
-          "items": {
-            "$ref": "#/$defs/blackbox_query_response"
-          }
-        },
-        "tls": {
-          "description": "Whether or not TLS is used when the connection is initiated. `false` by default.",
-          "type": "boolean"
-        },
-        "tls_config": {
-          "description": "Configuration for TLS protocol of TCP probe.",
-          "$ref": "#/$defs/blackbox_tls_config"
-        },
-        "check_revoked": {
-          "description": "Check each certificate in the TLS chain against its CRL and emit probe_ssl_crl_* metrics. This only reports revocation state, it never fails the probe: a revoked certificate or an unreachable CRL leaves probe_success untouched. Alert on the metrics instead. Requires tls to be true, or a query_response step using starttls. `false` by default.",
-          "type": "boolean"
-        }
-      },
-      "additionalProperties": false
-    },
-    "blackbox_query_response": {
-      "type": "object",
-      "properties": {
-        "expect": {
-          "type": "string",
-          "format": "regex"
-        },
-        "expect_bytes": {
-          "type": "string"
-        },
-        "labels": {
-          "type": "array",
-          "items": {
-            "$ref": "#/$defs/blackbox_label"
-          }
-        },
-        "send": {
-          "type": "string"
-        },
-        "starttls": {
-          "description": "`false` by default.",
-          "type": "boolean"
-        }
-      },
-      "additionalProperties": false
-    },
-    "blackbox_label": {
-      "type": "object",
-      "properties": {
-        "name": {
-          "type": "string"
-        },
-        "value": {
-          "type": "string"
-        }
-      },
-      "additionalProperties": false
-    },
-    "blackbox_unix_probe": {
-      "type": "object",
-      "properties": {
-        "query_response": {
-          "description": "The query sent in the unix socket probe and the expected associated response. \"expect\" matches a regular expression; \"expect_bytes\" does exact byte-by-byte match, mutually exclusive with \"expect\". \"labels\" can define labels which will be exported on metric \"probe_expect_info\"; \"send\" sends some content; \"send\" and \"labels.value\" can contain values matched by \"expect\" (such as \"${1}\"); \"starttls\" upgrades connection to TLS.",
-          "type": "array",
-          "items": {
-            "$ref": "#/$defs/blackbox_query_response"
-          }
-        },
-        "tls": {
-          "description": "Whether or not TLS is used when the connection is initiated. `false` by default.",
-          "type": "boolean"
-        },
-        "tls_config": {
-          "description": "Configuration for TLS protocol of unix socket probe.",
-          "$ref": "#/$defs/blackbox_tls_config"
-        },
-        "check_revoked": {
-          "description": "Check each certificate in the TLS chain against its CRL and emit probe_ssl_crl_* metrics. This only reports revocation state, it never fails the probe: a revoked certificate or an unreachable CRL leaves probe_success untouched. Alert on the metrics instead. Requires tls to be true, or a query_response step using starttls. `false` by default.",
-          "type": "boolean"
-        }
-      },
-      "additionalProperties": false
-    },
-    "blackbox_websocket_probe": {
-      "type": "object",
-      "properties": {
-        "http_config": {
-          "description": "Optional HTTP request configuration",
-          "$ref": "#/$defs/blackbox_http_client_config"
-        },
-        "headers": {
-          "description": "The HTTP headers set for the probe. The HTTP headers set for the probe.",
-          "$ref": "#/$defs/blackbox_headers"
-        },
-        "query_response": {
-          "description": "The query sent after connection upgrade and the expected associated response. \"expect\" matches a regular expression against incoming messages; \"send\" sends a message (can use values matched by \"expect\" such as \"${1}\").",
-          "type": "array",
-          "items": {
-            "$ref": "#/$defs/blackbox_query_response"
-          }
-        },
-        "preferred_ip_protocol": {
-          "description": "The IP protocol of the Websocket probe (ip4, ip6). `ip6` by default.",
-          "enum": [
-            "ip4",
-            "ip6"
-          ]
-        },
-        "ip_protocol_fallback": {
-          "description": "Fallback to the other IP protocol if the `preferred_ip_protocol` fails. `true` by default.",
-          "type": "boolean"
-        }
-      },
-      "additionalProperties": false
-    },
-    "blackbox_http_client_config": {
-      "type": "object",
-      "properties": {
-        "basic_auth": {
-          "description": "The HTTP basic authentication credentials.",
-          "$ref": "#/$defs/blackbox_basic_auth"
-        },
-        "authorization": {
-          "description": "Sets the `Authorization` header on every request with the configured credentials.",
-          "$ref": "#/$defs/blackbox_authorization"
-        },
-        "oauth2": {
-          "description": "OAuth 2.0 configuration to use to connect to the targets.",
-          "$ref": "#/$defs/blackbox_oauth2"
-        },
-        "bearer_token": {
-          "type": "string"
-        },
-        "bearer_token_file": {
-          "type": "string"
-        },
-        "tls_config": {
-          "description": "Configuration for TLS protocol of HTTP probe.",
-          "$ref": "#/$defs/blackbox_tls_config"
-        },
-        "follow_redirects": {
-          "description": "Whether or not the probe will follow any redirects. `true` by default.",
-          "type": "boolean"
-        },
-        "enable_http2": {
-          "description": "Whether to enable HTTP2. `true` by default.",
-          "type": "boolean"
-        },
-        "proxy_url": {
-          "description": "HTTP proxy server to use to connect to the targets.",
-          "type": "string",
-          "format": "uri"
-        },
-        "no_proxy": {
-          "description": "Comma-separated string that can contain IPs, CIDR notation, domain names that should be excluded from proxying. IP and domain names can contain port numbers.",
-          "type": "string"
-        },
-        "proxy_from_environment": {
-          "description": "Use proxy URL indicated by environment variables (HTTP_PROXY, https_proxy, HTTPs_PROXY, https_proxy, and no_proxy). `false` by default.",
-          "type": "boolean"
-        },
-        "proxy_connect_header": {
-          "description": "Specifies headers to send to proxies during CONNECT requests.",
-          "type": "object",
-          "additionalProperties": {
-            "type": "array",
-            "items": {
-              "type": "string"
-            }
-          }
-        },
-        "http_headers": {
-          "$ref": "#/$defs/blackbox_headers"
-        }
-      },
-      "additionalProperties": false
     }
   }
 }

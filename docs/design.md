@@ -1,54 +1,45 @@
 # probe-exporter
 
-probe-exporter is an OpenMetrics exporter that runs probes on a schedule and serves the latest result of each. It owns its target lists: its configuration states what to probe, and a scraper needs only the exporter's address.
+probe-exporter is an OpenMetrics exporter that probes the targets its configuration lists, on a schedule, and serves the latest result of each check. It owns its targets: a scraper needs only the exporter's address.
 
-Its probers are blackbox_exporter's, imported as a library and run unchanged, and its own, for the checks blackbox does not make. A blackbox prober behaves here exactly as it does in blackbox.
+The configuration is written from the user's side: what is probed, and which probers check it. How a prober carries out its check is the exporter's own concern. Most probers are carried out by blackbox_exporter's probers, imported as a library; `domain_registration` is the exporter's own.
 
 ## Concepts
 
 | Term | Meaning |
 |---|---|
-| prober | a kind of check, such as `tcp` or `rdap` |
-| probe | a prober with its settings, how often it runs and its targets, named in the configuration |
-| target | a name and the addresses it is checked at |
-| run | one check of a target's name at one of its addresses |
-| result | what the latest run produced: its success and its series |
+| prober | a kind of check, such as `certificate` or `domain_registration` |
+| probe target | what is probed, named in the configuration, with the probers that check it |
+| run | one check of a probe target by one of its probers, at one address, port and host where the prober takes them |
+| result | what the latest run produced: its success, its series and its log |
 
 ## Configuration
 
-The configuration is one YAML file, named by `--config.file`. [`examples/probe-exporter.yml`](../examples/probe-exporter.yml) is one.
+The configuration is one YAML file, named by `--config.file`. [`examples/probe-exporter.yml`](../examples/probe-exporter.yml) uses every prober.
 
 | Field | Holds |
 |---|---|
 | `version` | the configuration format the file is written in: a minor such as `"1.0"`, or a major such as `"1"` |
-| `probes` | probe name → the probe |
-| `prober` | the probe's prober |
-| `timeout` | how long a run may take |
-| `interval` | how often each of the probe's runs repeats |
-| `dns`, `grpc`, `http`, `icmp`, `tcp`, `unix`, `websocket` | the settings of the probe's prober, the one key its `prober` names; optional |
-| `target_groups` | group name → the group: its targets and the labels they share |
-| `targets` | the group's targets |
-| `name` | a target's name, a host name without a wildcard |
-| `addresses` | where a target's runs connect, one run per address, each in the form its probe's prober takes |
-| `labels` | labels every series of the group's targets carries; optional, and never one the exporter sets |
-| `max_concurrent_probes` | how many runs happen at once, across every probe |
+| `probers` | prober name → its settings; only the probers the targets name |
+| `probe_targets` | target name → the target |
+| `probers` of a target | the probers that check it |
+| `addresses` | where the target is reached, each a host name or an IP address without a port |
+| `serves` | the hosts the target serves, each a host name without a wildcard |
 
-What a target's name is to its run, and the form of its addresses, follow its probe's prober:
+Every prober takes `interval`, how often it checks each target, and `timeout`, how long one check may take. What else it takes, and what it needs of a target:
 
-| Prober | The name | An address |
+| Prober | Its own settings | A target gives it |
 |---|---|---|
-| `tcp`, `grpc` | the TLS server name | a host and its port, such as `www.example.com:443` or `[2001:db8::1]:443` |
-| `http` | the `Host` header | an `http` or `https` URL |
-| `dns` | the name asked | a DNS server, its port optional |
-| `websocket` | a label only | a `ws` or `wss` URL |
-| `icmp` | a label only | a host without a port |
-| `unix` | a label only | an absolute path to a socket |
-| `rdap` | a label only | a domain name |
+| `certificate` | `ports` | `addresses`, `serves` |
+| `dns` | none | `addresses`, `serves` |
+| `domain_registration` | none | its name, a domain |
+| `http` | `ports`, `path`, `status_codes` | `addresses`, `serves` |
+| `ping` | none | `addresses` |
+| `tcp` | `ports` | `addresses` |
 
-- A blackbox prober's settings are written as blackbox writes a module's, so a `blackbox.yml` module's settings carry over as they are, less what a target's name stands for: a `tcp` or `grpc` probe's `tls_config` states no `server_name`, an `http` probe's `headers` no `Host`, and a `dns` probe's settings no `query_name`.
-- Every field is required except where the table says optional. A value is refused, never corrected.
-- A configuration is held to the schema of the version it states before anything in it is read, then to the rules a schema cannot state: an `interval` and a `timeout` above zero, a name checked at an address once in a group, and blackbox's own reading of each probe's settings.
-- The schema holds each probe to its prober: its settings key, and the form of its targets' addresses.
+- A target gives `addresses` and `serves` only when one of its probers takes them.
+- Every field is required where its prober takes it. A value is refused, never corrected.
+- A configuration is held to the schema of the version it states before anything in it is read, then to the rules a schema cannot state: an `interval` and a `timeout` above zero, every prober a target names given its settings under `probers`, and a target checked by `domain_registration` named by its domain.
 - Every problem is reported at once, each at its line and column with the lines around it, as a compiler reports one, and with the schema rule it breaks where it breaks one.
 
 | Flag | Holds |
@@ -56,6 +47,7 @@ What a target's name is to its run, and the form of its addresses, follow its pr
 | `--config.file` | the configuration file |
 | `--web.listen-address` | an address to listen on; repeatable |
 | `--web.config.file` | the exporter-toolkit web configuration; optional |
+| `--probes.max-concurrent` | how many runs happen at once, across every prober |
 | `--log.level`, `--log.format` | the log's level and format |
 
 The configuration is read at start and again on `SIGHUP`. A configuration that fails to load is refused and the running one kept; one that fails at start stops the exporter.
@@ -67,11 +59,10 @@ The configuration format and the exporter carry separate versions. The format's 
 | Change | Format version | Exporter version |
 |---|---|---|
 | a breaking format change | a new major, `2.0` | a new major |
-| an additive format change, such as a new optional field | a new minor, `1.1` | a new minor |
+| an additive format change, such as a new prober | a new minor, `1.1` | a new minor |
 | the exporter's code only | none | a new patch |
 
-- A minor's schema is a file of its own, frozen once released.
-- A schema is written by hand, except its `blackbox_*` definitions: the generator fills those in the newest minor's schema from blackbox_exporter's Go types, each field described by blackbox's configuration reference, both read from the blackbox_exporter release the exporter builds with. A change to blackbox's settings is a schema diff.
+- A minor's schema is a file of its own, written by hand and frozen once released.
 - A major floats to its newest minor: `version: "1"` is read as the newest 1.x the exporter knows, and `version: "1.0"` as 1.0.
 - A version the exporter does not know is refused, naming the versions it reads.
 - Each release attaches every minor's schema, and each major's as its newest minor.
@@ -80,13 +71,13 @@ The configuration format and the exporter carry separate versions. The format's 
 
 ## Schedule
 
-- Every run repeats once per its probe's interval: each of a target's addresses is checked every interval, each on its own schedule.
-- Runs are staggered across the interval by a hash of their probe, group, name and address, so a group's runs spread out instead of starting together.
-- A run is bounded by its probe's `timeout`.
-- At most `max_concurrent_probes` runs happen at once; a run waits for a free slot.
+- A target's probers each check it: at every address, on every port of the prober's `ports`, for every host it `serves`, where the prober takes them. Each such check is a run, repeating once per its prober's `interval` on its own schedule.
+- Runs are staggered across the interval by a hash of their target, prober, address, port and host, so they spread out instead of starting together.
+- A run is bounded by its prober's `timeout`.
+- At most `--probes.max-concurrent` runs happen at once; a run waits for a free slot.
 - A run first happens within its first interval after the configuration loads. It has no result until then.
 
-On reload, a run still configured keeps its result and its place in the schedule; a run no longer configured loses its result.
+On reload, a run still configured with the same settings keeps its result and its place in the schedule; a run no longer configured loses its result.
 
 ## Results
 
@@ -98,11 +89,11 @@ Every series of a result carries:
 
 | Label | Value |
 |---|---|
-| `probe` | the probe |
-| `target_group` | the name of the target's group |
-| `name` | the target's name |
-| `address` | the address the run connected to |
-| each of `labels` | its value |
+| `probe_target` | the target's name |
+| `prober` | the prober |
+| `address` | the address checked; for `domain_registration`, the domain |
+| `port` | the port checked, where the prober takes ports |
+| `host` | the host checked for, where the prober takes the hosts a target serves |
 
 Each result also has:
 
@@ -112,14 +103,14 @@ Each result also has:
 | `probe_duration_seconds` | how long the run took |
 | `probe_last_run_timestamp_seconds` | when the run ended |
 
-A blackbox prober's series are named as blackbox names them.
+A prober carried out by blackbox_exporter serves its series as blackbox names them.
 
 ## Serving
 
 | Path | Answers |
 |---|---|
 | `/metrics` | every run's result, and the exporter's own series; OpenMetrics when the scraper asks for it, the Prometheus text format otherwise |
-| `/results` | every run's latest result: its probe, group, name and address, whether it succeeded, when it ran, how long it took, and its log |
+| `/results` | every run's latest result: its target, prober, address, port and host, whether it succeeded, when it ran, how long it took, and its log |
 | `/-/healthy` | `200` while the process runs |
 | `/-/ready` | `200` once a configuration has loaded |
 
@@ -134,24 +125,28 @@ The exporter's own series:
 
 ## Probers
 
-| Prober | From |
-|---|---|
-| `dns`, `grpc`, `http`, `icmp`, `tcp`, `unix`, `websocket` | blackbox_exporter |
-| `rdap` | probe-exporter |
+A prober is one interface: it checks one run's place within a deadline, adds its series to the result, and answers whether the run succeeded.
 
-A prober is one interface: it checks a target's name at one address within a deadline, adds its series to the result, and answers whether the run succeeded. Each blackbox prober is held behind it with its probe's settings, and runs exactly as blackbox's own handler would against the address, with the name set in a copy of the settings where the table above says it is sent.
+| Prober | A run | Carried out by |
+|---|---|---|
+| `certificate` | asks the address and port for the host's certificate, verified against the system's certificate authorities | blackbox's `tcp` prober with TLS, the host as the TLS server name |
+| `dns` | asks the address, a DNS server, for the host's `A` record | blackbox's `dns` prober |
+| `domain_registration` | reads when the domain's registration expires | the exporter's RDAP prober |
+| `http` | requests `path` from the address and port over HTTPS, as the host, and succeeds on one of `status_codes` | blackbox's `http` prober, the host as the `Host` header and the TLS server name |
+| `ping` | pings the address | blackbox's `icmp` prober |
+| `tcp` | connects to the address and port | blackbox's `tcp` prober |
 
-### rdap
+A blackbox prober runs exactly as blackbox's own handler would, with a module the exporter builds from the prober's settings. Each module resolves a host name to IPv4 first, falling back to IPv6.
 
-The `rdap` prober reads a domain's registration from its registry over RDAP (RFC 9083), the HTTPS protocol that replaces WHOIS for registration data.
+### domain_registration
 
-- An address is a domain name, the domain asked about.
+The `domain_registration` prober reads a domain's registration from its registry over RDAP (RFC 9083), the HTTPS protocol that replaces WHOIS for registration data.
+
+- The domain is the target's name.
 - The registry is found through IANA's RDAP bootstrap for DNS (RFC 9224), which maps a top-level domain to its registry's RDAP base URLs, by the domain's longest suffix the bootstrap names. Only HTTPS base URLs are used.
 - The bootstrap is read when first needed and again at most once a day; a failed read keeps the last one.
 - A run asks the registry for the domain, `GET <base URL>domain/<name>`, with `Accept: application/rdap+json`.
 - A run succeeds when the answer is `200` and holds an `expiration` event.
-
-An `rdap` probe takes no settings beyond `prober`, `timeout`, `interval` and `target_groups`.
 
 | Series | Value |
 |---|---|

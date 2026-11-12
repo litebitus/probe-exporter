@@ -13,8 +13,6 @@ import (
 
 	"github.com/santhosh-tekuri/jsonschema/v6"
 	"go.yaml.in/yaml/v3"
-
-	"github.com/litebitus/probe-exporter/proberesults"
 )
 
 func TestAConfigurationStatesAMajorOrAMinor(t *testing.T) {
@@ -145,98 +143,45 @@ func TestEveryExampleConfigurationIsValidAgainstTheNewestSchema(t *testing.T) {
 }
 
 const mockConfiguration = `version: "1"
-probes:
-  mock_tls:
-    prober: tcp
+probers:
+  certificate:
+    interval: 5m
     timeout: 5s
+    ports: [443]
+  dns:
     interval: 1m
-    tcp:
-      tls: true
-    target_groups:
-      mock-cdn:
-        targets:
-          - name: mock-a.example
-            addresses: [192.0.2.10:443]
-        labels:
-          mock_site: mock-cdn
-  mock_registration:
-    prober: rdap
-    timeout: 10s
-    interval: 6h
-    target_groups:
-      mock-domains:
-        targets:
-          - name: mock-domain.example
-            addresses: [mock-domain.example]
-max_concurrent_probes: 2
-`
-
-func TestEveryBlackboxSettingTheExporterReadsIsValid(t *testing.T) {
-	schema := newestSchema(t)
-	text := strings.Replace(mockConfiguration, "      tls: true\n", `      tls: true
-      preferred_ip_protocol: ip4
-      tls_config:
-        insecure_skip_verify: false
-        min_version: TLS12
-      query_response:
-        - expect: "^220"
-          labels:
-            - name: mock_label
-              value: mock
-        - send: "QUIT"
-`, 1)
-	text = strings.Replace(text, "max_concurrent_probes: 2\n", `  mock_web:
-    prober: http
-    timeout: 5s
-    interval: 1m
-    http:
-      method: GET
-      valid_status_codes: [200, 204]
-      headers:
-        X-Mock: mock
-      body_size_limit: 10MB
-      follow_redirects: false
-      basic_auth:
-        username: mock-user
-        password: mock-password
-      fail_if_body_not_matches_regexp: ["mock"]
-    target_groups:
-      mock-sites:
-        targets:
-          - name: mock-a.example
-            addresses: [https://mock-a.example/healthz]
-  mock_lookup:
-    prober: dns
     timeout: 3s
+  domain_registration:
+    interval: 6h
+    timeout: 10s
+  http:
     interval: 1m
-    dns:
-      transport_protocol: udp
-      query_type: A
-      valid_rcodes: [NOERROR]
-      validate_answer_rrs:
-        fail_if_not_matches_regexp: [".*"]
-    target_groups:
-      mock-resolvers:
-        targets:
-          - name: mock-name.example
-            addresses: [192.0.2.53]
-max_concurrent_probes: 2
-`, 1)
-	if err := schema.Validate(yamlInstance(t, text)); err != nil {
-		t.Errorf("valid blackbox settings are refused: %v", err)
-	}
-}
-
-// A group's labels cannot name a label the exporter sets on every series.
-func TestTheSchemaReservesTheLabelsTheExporterSets(t *testing.T) {
-	schema := newestSchema(t)
-	for _, label := range proberesults.IdentityLabels {
-		text := strings.Replace(mockConfiguration, "mock_site: mock-cdn", label+": mock-cdn", 1)
-		if err := schema.Validate(yamlInstance(t, text)); err == nil {
-			t.Errorf("the schema admits label %s", label)
-		}
-	}
-}
+    timeout: 5s
+    ports: [443]
+    path: /healthz
+    status_codes: [200]
+  ping:
+    interval: 1m
+    timeout: 3s
+  tcp:
+    interval: 1m
+    timeout: 3s
+    ports: [5432]
+probe_targets:
+  mock-cdn:
+    addresses: [192.0.2.10, mock-cdn.example.net]
+    probers: [certificate, http]
+    serves: [mock-a.example]
+  mock-database:
+    addresses: [192.0.2.20]
+    probers: [ping, tcp]
+  mock-resolver:
+    addresses: ["2001:db8::53"]
+    probers: [dns]
+    serves: [mock-a.example]
+  mock-domain.example:
+    probers: [domain_registration]
+`
 
 // The schema refuses what the exporter refuses that a schema can state.
 func TestTheSchemaRefusesWhatTheExporterRefuses(t *testing.T) {
@@ -245,37 +190,38 @@ func TestTheSchemaRefusesWhatTheExporterRefuses(t *testing.T) {
 		t.Fatalf("the mock configuration is invalid: %v", err)
 	}
 	for name, change := range map[string][2]string{
-		"no version":                {`version: "1"` + "\n", ""},
-		"unknown version":           {`version: "1"`, `version: "2"`},
-		"unknown prober":            {"prober: tcp", "prober: mock"},
-		"no timeout":                {"    timeout: 10s\n", ""},
-		"rdap settings":             {"prober: rdap", "prober: rdap\n    tcp: {}"},
-		"another prober's settings": {"    tcp:\n", "    http: {}\n    tcp:\n"},
-		"duration":                  {"interval: 1m", "interval: 1d"},
-		"no interval":               {"    interval: 6h\n", ""},
-		"no target groups": {"    target_groups:\n      mock-domains:\n        targets:\n          - name: mock-domain.example\n            addresses: [mock-domain.example]\n",
-			"    target_groups: {}\n"},
-		"tcp address without a port":     {"addresses: [192.0.2.10:443]", "addresses: [192.0.2.10]"},
-		"rdap address as a URL":          {"addresses: [mock-domain.example]", "addresses: [https://mock-domain.example]"},
-		"wildcard name":                  {"name: mock-a.example", `name: "*.mock.example"`},
-		"no addresses":                   {"addresses: [192.0.2.10:443]", "addresses: []"},
-		"repeated address":               {"addresses: [192.0.2.10:443]", "addresses: [192.0.2.10:443, 192.0.2.10:443]"},
-		"a server name in the settings":  {"      tls: true", "      tls: true\n      tls_config:\n        server_name: mock-a.example"},
-		"a name field from the old form": {"        labels:\n", "        hostnames: [mock-a.example]\n        labels:\n"},
-		"unknown group field":            {"        labels:\n", "        mock_field: 1\n        labels:\n"},
-		"no targets": {"        targets:\n          - name: mock-a.example\n            addresses: [192.0.2.10:443]\n",
-			"        targets: []\n"},
-		"reserved label":              {"mock_site: mock-cdn", "address: mock-cdn"},
-		"label name":                  {"mock_site: mock-cdn", "mock-site: mock-cdn"},
-		"double underscore":           {"mock_site: mock-cdn", "__mock: mock-cdn"},
-		"no concurrency":              {"max_concurrent_probes: 2", "max_concurrent_probes: 0"},
-		"unknown field":               {"max_concurrent_probes: 2", "max_concurrent_probes: 2\nmock_field: 1"},
-		"misspelled blackbox setting": {"      tls: true", "      tlss: true"},
-		"mistyped blackbox setting":   {"      tls: true", "      tls: mock"},
-		"unknown ip protocol":         {"      tls: true", "      preferred_ip_protocol: ip5"},
-		"nested blackbox setting":     {"      tls: true", "      tls_config:\n        mock_setting: 1"},
-		"unknown TLS version":         {"      tls: true", "      tls_config:\n        min_version: TLS09"},
-		"mistyped header match":       {"prober: tcp", "prober: http\n    http:\n      method: GET\n      fail_if_header_matches:\n        - header: 1"},
+		"no version":                  {`version: "1"` + "\n", ""},
+		"unknown version":             {`version: "1"`, `version: "2"`},
+		"unknown field":               {"probe_targets:\n", "mock_field: 1\nprobe_targets:\n"},
+		"unknown prober settings":     {"  ping:\n", "  mock:\n"},
+		"unknown prober setting":      {"    path: /healthz\n", "    path: /healthz\n    mock_setting: 1\n"},
+		"no timeout":                  {"    timeout: 10s\n", ""},
+		"duration":                    {"interval: 6h", "interval: 1d"},
+		"no ports":                    {"    ports: [5432]\n", ""},
+		"no port":                     {"ports: [5432]", "ports: []"},
+		"port zero":                   {"ports: [5432]", "ports: [0]"},
+		"port too high":               {"ports: [5432]", "ports: [70000]"},
+		"repeated port":               {"ports: [5432]", "ports: [5432, 5432]"},
+		"path without a slash":        {"path: /healthz", "path: healthz"},
+		"no status codes":             {"    status_codes: [200]\n", ""},
+		"status code too high":        {"status_codes: [200]", "status_codes: [600]"},
+		"no targets":                  {"probe_targets:\n", "probe_targets: {}\nmock_targets:\n"},
+		"target name with a space":    {"  mock-cdn:", "  mock cdn:"},
+		"no probers":                  {"    probers: [ping, tcp]\n", ""},
+		"empty probers":               {"probers: [ping, tcp]", "probers: []"},
+		"unknown prober":              {"probers: [ping, tcp]", "probers: [ping, mock]"},
+		"repeated prober":             {"probers: [ping, tcp]", "probers: [ping, ping]"},
+		"certificate without serves":  {"    serves: [mock-a.example]\n  mock-database:", "  mock-database:"},
+		"ping without addresses":      {"    addresses: [192.0.2.20]\n", ""},
+		"addresses on a domain":       {"    probers: [domain_registration]\n", "    probers: [domain_registration]\n    addresses: [192.0.2.10]\n"},
+		"serves on a domain":          {"    probers: [domain_registration]\n", "    probers: [domain_registration]\n    serves: [mock-a.example]\n"},
+		"serves on a ping":            {"    probers: [ping, tcp]\n", "    probers: [ping, tcp]\n    serves: [mock-a.example]\n"},
+		"address with a port":         {"addresses: [192.0.2.20]", "addresses: [192.0.2.20:5432]"},
+		"address as a URL":            {"addresses: [192.0.2.20]", "addresses: [https://192.0.2.20]"},
+		"repeated address":            {"addresses: [192.0.2.20]", "addresses: [192.0.2.20, 192.0.2.20]"},
+		"wildcard host":               {"serves: [mock-a.example]\n  mock-database:", "serves: [\"*.mock.example\"]\n  mock-database:"},
+		"unknown target field":        {"    probers: [domain_registration]\n", "    probers: [domain_registration]\n    mock_field: 1\n"},
+		"a field of the earlier form": {"  certificate:\n", "  certificate:\n    prober: tcp\n"},
 	} {
 		if !strings.Contains(mockConfiguration, change[0]) {
 			t.Fatalf("%s: the mock configuration holds no %q", name, change[0])

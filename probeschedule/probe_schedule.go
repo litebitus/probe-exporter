@@ -5,7 +5,7 @@ import (
 	"context"
 	"hash/fnv"
 	"log/slog"
-	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -14,28 +14,28 @@ import (
 	dto "github.com/prometheus/client_model/go"
 )
 
-// Target is what one run is against: a name, and one address it is checked at.
+// Target is what one run is against: an address, and the port and host the run takes, zero and empty where its prober takes none.
 type Target struct {
-	Name    string
 	Address string
+	Port    int
+	Host    string
 }
 
-// Prober is a kind of check with its probe's settings: it runs against one target before the context's deadline, registers its series, writes its log, and answers whether the run succeeded.
+// Prober is a kind of check with its settings: it runs against one target before the context's deadline, registers its series, writes its log, and answers whether the run succeeded.
 type Prober interface {
 	Probe(ctx context.Context, target Target, registry *prometheus.Registry, logger *slog.Logger) bool
 }
 
-// ProbeIdentity names one probe run's place: the probe, its target group and its target.
+// ProbeIdentity names one probe run's place: the probe target, the prober checking it, and what the run is against.
 type ProbeIdentity struct {
-	Probe       string
-	TargetGroup string
+	ProbeTarget string
+	Prober      string
 	Target      Target
 }
 
-// Probe is one probe to run on the schedule, and the settings of its prober as written, which tell a reload whether the probe changed.
+// Probe is one probe to run on the schedule, and its prober's settings, which tell a reload whether the probe changed.
 type Probe struct {
 	Identity       ProbeIdentity
-	Labels         map[string]string
 	Interval       time.Duration
 	Timeout        time.Duration
 	Prober         Prober
@@ -45,7 +45,6 @@ type Probe struct {
 // Result is what a probe's latest run produced.
 type Result struct {
 	Identity ProbeIdentity
-	Labels   map[string]string
 	Success  bool
 	Duration time.Duration
 	EndedAt  time.Time
@@ -129,19 +128,14 @@ func (schedule *Schedule) Stop() {
 }
 
 func (probe Probe) fingerprint() string {
-	var labels []string
-	for name, value := range probe.Labels {
-		labels = append(labels, name+"="+value)
-	}
-	slices.Sort(labels)
-	return strings.Join(append(labels, probe.Interval.String(), probe.Timeout.String(), probe.ProberSettings), "\x00")
+	return strings.Join([]string{probe.Interval.String(), probe.Timeout.String(), probe.ProberSettings}, "\x00")
 }
 
 // StaggerOffset is how far into its interval a probe first runs, the same for the same probe on every start.
 func StaggerOffset(identity ProbeIdentity, interval time.Duration) time.Duration {
 	hash := fnv.New64a()
 	hash.Write([]byte(strings.Join([]string{
-		identity.Probe, identity.TargetGroup, identity.Target.Name, identity.Target.Address,
+		identity.ProbeTarget, identity.Prober, identity.Target.Address, strconv.Itoa(identity.Target.Port), identity.Target.Host,
 	}, "\x00")))
 	return time.Duration(hash.Sum64() % uint64(interval))
 }
@@ -177,8 +171,8 @@ func (schedule *Schedule) runOnce(ctx context.Context, probe Probe) {
 	}
 	if !result.Success {
 		schedule.logger.Warn("probe failed",
-			"probe", probe.Identity.Probe, "target_group", probe.Identity.TargetGroup,
-			"name", probe.Identity.Target.Name, "target", probe.Identity.Target.Address)
+			"probe_target", probe.Identity.ProbeTarget, "prober", probe.Identity.Prober,
+			"address", probe.Identity.Target.Address, "port", probe.Identity.Target.Port, "host", probe.Identity.Target.Host)
 	}
 	schedule.keeper.Keep(result)
 }
