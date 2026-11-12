@@ -170,7 +170,7 @@ A failed run logs why: no registry for the domain's top-level domain, the regist
 ## Distribution
 
 - Binaries for Linux and macOS, `amd64` and `arm64`, attached to each release.
-- A container image per release, built on a distroless base, running as a non-root user.
+- A container image per release, built on a distroless base, running as a non-root user, published to `ghcr.io` and `quay.io`.
 
 ## Open questions
 

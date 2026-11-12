@@ -60,6 +60,12 @@ jobs:
           GITHUB_TOKEN: ${{ github.token }}
         run: echo "$GITHUB_TOKEN" | docker login ghcr.io --username "$GITHUB_ACTOR" --password-stdin
 
+      - name: Log in to Quay
+        env:
+          QUAY_USERNAME: ${{ secrets.QUAY_USERNAME }}
+          QUAY_TOKEN: ${{ secrets.QUAY_TOKEN }}
+        run: echo "$QUAY_TOKEN" | docker login quay.io --username "$QUAY_USERNAME" --password-stdin
+
       - name: Build and publish the pre-release and its image
         uses: goreleaser/goreleaser-action@v7.3.0
         with:
@@ -74,12 +80,14 @@ jobs:
           VERSION: ${{ steps.version.outputs.version }}
         run: |
           set -euo pipefail
-          image="ghcr.io/${GITHUB_REPOSITORY}:${VERSION#v}"
-          digest="$(docker buildx imagetools inspect "$image" --format '{{json .Manifest}}' | jq -r .digest)"
           {
             echo "### Snapshot $VERSION"
             echo
             echo "| Image | Digest |"
             echo "|---|---|"
-            echo "| \`$image\` | \`$digest\` |"
           } >> "$GITHUB_STEP_SUMMARY"
+          for registry in ghcr.io quay.io; do
+            image="${registry}/${GITHUB_REPOSITORY}:${VERSION#v}"
+            digest="$(docker buildx imagetools inspect "$image" --format '{{json .Manifest}}' | jq -r .digest)"
+            echo "| \`$image\` | \`$digest\` |" >> "$GITHUB_STEP_SUMMARY"
+          done

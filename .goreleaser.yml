@@ -29,9 +29,13 @@ checksum:
   algorithm: sha256
 
 kos:
-  - build: probe-exporter
+  - &release_image
+    id: release-image
+    disable: '{{ ne .Prerelease "" }}'
+    build: probe-exporter
     repositories:
       - ghcr.io/litebitus/probe-exporter
+      - quay.io/litebitus/probe-exporter
     base_image: gcr.io/distroless/static-debian12:nonroot@sha256:afa5c872c891853ca7fcf1f12c3edb23f7eeef36189728842dd51042ff57f7ab
     platforms:
       - linux/amd64
@@ -44,6 +48,11 @@ kos:
     sbom: none
     creation_time: "{{ .CommitTimestamp }}"
     ko_data_creation_time: "{{ .CommitTimestamp }}"
+  - <<: *release_image
+    id: snapshot-image
+    disable: '{{ eq .Prerelease "" }}'
+    labels:
+      quay.expires-after: 2w
 
 release:
   prerelease: auto

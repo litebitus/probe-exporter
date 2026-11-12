@@ -26,7 +26,7 @@ probe-exporter --config.file=probe-exporter.yml --web.listen-address=:9123
 
 [`examples/probe-exporter.yml`](examples/probe-exporter.yml) is an example configuration using every prober.
 
-The container image is `ghcr.io/litebitus/probe-exporter:<version>`, distroless and running as a non-root user:
+The container image is published to both `ghcr.io/litebitus/probe-exporter:<version>` and `quay.io/litebitus/probe-exporter:<version>`, distroless and running as a non-root user:
 
 ```sh
 docker run -v "$PWD/probe-exporter.yml:/etc/probe-exporter.yml:ro" -p 9123:9123 \
@@ -78,6 +78,11 @@ The integration tests run the exporter from a configuration file over HTTP, agai
 
 The `Release` workflow, dispatched by hand, runs the tests, computes the next version, stamps `CHANGELOG.md` and `schemas/CHANGELOG.md`, tags it, and publishes the archives, the container image and the schemas.
 
-The `Snapshot` workflow, dispatched by hand, publishes a pre-release such as `v0.0.1-snapshot.20261111175512`, with its image.
+The `Snapshot` workflow, dispatched by hand, publishes a pre-release such as `v0.0.1-snapshot.20261111175512`, with its image, and lists the image in both registries in the run's summary.
 
-The `Prune snapshot images` workflow runs daily and deletes every snapshot image older than two weeks, with the platform images only it uses; a release's image is never deleted. Dispatched by hand, it names what it would delete unless `dry_run` is turned off.
+A snapshot image is kept two weeks in both registries; a release's image is never deleted:
+
+| Registry | What deletes an expired snapshot |
+|---|---|
+| quay.io | Quay itself, from the image's `quay.expires-after` label |
+| ghcr.io | the `Prune snapshot images` workflow, daily, with the platform images only the snapshot uses; dispatched by hand, it names what it would delete unless `dry_run` is turned off |

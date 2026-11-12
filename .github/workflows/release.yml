@@ -103,6 +103,13 @@ jobs:
           GITHUB_TOKEN: ${{ github.token }}
         run: echo "$GITHUB_TOKEN" | docker login ghcr.io --username "$GITHUB_ACTOR" --password-stdin
 
+      - name: Log in to Quay
+        if: ${{ !inputs.dry_run }}
+        env:
+          QUAY_USERNAME: ${{ secrets.QUAY_USERNAME }}
+          QUAY_TOKEN: ${{ secrets.QUAY_TOKEN }}
+        run: echo "$QUAY_TOKEN" | docker login quay.io --username "$QUAY_USERNAME" --password-stdin
+
       - name: Build and publish the release and its image
         if: ${{ !inputs.dry_run }}
         uses: goreleaser/goreleaser-action@v7.3.0
@@ -112,6 +119,24 @@ jobs:
           args: release --clean --release-notes ${{ runner.temp }}/release-notes.md
         env:
           GITHUB_TOKEN: ${{ github.token }}
+
+      - name: Summarize the release
+        if: ${{ !inputs.dry_run }}
+        env:
+          VERSION: ${{ steps.version.outputs.next }}
+        run: |
+          set -euo pipefail
+          {
+            echo "### Release $VERSION"
+            echo
+            echo "| Image | Digest |"
+            echo "|---|---|"
+          } >> "$GITHUB_STEP_SUMMARY"
+          for registry in ghcr.io quay.io; do
+            image="${registry}/${GITHUB_REPOSITORY}:${VERSION#v}"
+            digest="$(docker buildx imagetools inspect "$image" --format '{{json .Manifest}}' | jq -r .digest)"
+            echo "| \`$image\` | \`$digest\` |" >> "$GITHUB_STEP_SUMMARY"
+          done
 
       - name: Dry run summary
         if: ${{ inputs.dry_run }}
