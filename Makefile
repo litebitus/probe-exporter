@@ -1,10 +1,13 @@
 COVERAGE_PROFILE = /tmp/probe-exporter-coverage.out
 COVERAGE_MINIMUM = 95
 
-.PHONY: build test
+.PHONY: build schema test
 
 build: test
 	go build -o bin/probe-exporter .
+
+schema:
+	go run ./internal/schemagen schemas
 
 test:
 	go vet ./...

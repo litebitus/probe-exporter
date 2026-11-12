@@ -3,7 +3,19 @@ name: Test
 on:
   push:
     branches: [main]
+    paths-ignore:
+      - "**.md"
+      - ".github/**"
+      - ".gitignore"
+      - ".goreleaser.yml"
+      - "LICENSE"
   pull_request:
+    paths-ignore:
+      - "**.md"
+      - ".github/**"
+      - ".gitignore"
+      - ".goreleaser.yml"
+      - "LICENSE"
 
 permissions:
   contents: read

@@ -1,5 +1,9 @@
 version: 2
 
+before:
+  hooks:
+    - go run ./internal/schemaassets .schema-assets
+
 builds:
   - id: probe-exporter
     env:
@@ -41,3 +45,5 @@ kos:
 
 release:
   prerelease: auto
+  extra_files:
+    - glob: .schema-assets/*.schema.json

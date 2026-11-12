@@ -141,7 +141,7 @@ func (program *exporterProgram) load() error {
 	}
 	if err != nil {
 		program.reloadSuccessful.Set(0)
-		return fmt.Errorf("failed to load %s: %w", program.configurationFile, err)
+		return err
 	}
 	program.reloadSuccessful.Set(1)
 	program.reloadSucceededAt.SetToCurrentTime()

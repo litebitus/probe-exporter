@@ -1,0 +1,12 @@
+# yaml-language-server: $schema=https://github.com/litebitus/yaml-dsl-spec/releases/latest/download/yaml-dsl-v1.schema.json
+version: "1"
+dsls:
+  - id: probe-exporter
+    file_includes: ["**/probe-exporter.yml"]
+    file_excludes: []
+    schema_search_paths:
+      - https://github.com/litebitus/probe-exporter/releases/latest/download/probe-exporter-v1.schema.json
+    key_sort_orders: []
+    scopes: {}
+    declarations: []
+    references: []

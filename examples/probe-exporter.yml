@@ -1,0 +1,39 @@
+# yaml-language-server: $schema=../schemas/probe-exporter-v1.0.schema.json
+version: "1"
+
+probes:
+  tls_connect:
+    prober: tcp
+    timeout: 10s
+    interval: 5m
+    tcp:
+      preferred_ip_protocol: ip4
+      tls: true
+    target_groups:
+      by-name:
+        targets:
+          - name: api.example.com
+            addresses: [api.example.com:443]
+          - name: www.example.com
+            addresses: [www.example.com:443]
+      mock-cdn:
+        targets:
+          - name: api.example.com
+            addresses: [192.0.2.10:443, 192.0.2.11:443]
+          - name: www.example.com
+            addresses: [192.0.2.10:443]
+        labels:
+          site: mock-cdn
+  domain_registration:
+    prober: rdap
+    timeout: 10s
+    interval: 6h
+    target_groups:
+      registered-domains:
+        targets:
+          - name: example.com
+            addresses: [example.com]
+          - name: example.org
+            addresses: [example.org]
+
+max_concurrent_probes: 8

@@ -10,7 +10,7 @@ import (
 	"github.com/litebitus/probe-exporter/rdapprober"
 )
 
-// proberSet makes each module's prober, every rdap module sharing one bootstrap.
+// proberSet makes each probe's prober, every rdap probe sharing one bootstrap.
 type proberSet struct {
 	rdapProber rdapprober.RDAPProber
 }
@@ -19,40 +19,36 @@ func newProberSet(bootstrap *rdapprober.Bootstrap, client *http.Client) *proberS
 	return &proberSet{rdapProber: rdapprober.NewRDAPProber(bootstrap, client)}
 }
 
-func (probers *proberSet) prober(module exporterconfig.Module) (probeschedule.Prober, error) {
-	if module.Prober == exporterconfig.RDAPProber {
+func (probers *proberSet) prober(probe exporterconfig.Probe) (probeschedule.Prober, error) {
+	if probe.Prober == exporterconfig.RDAPProber {
 		return probers.rdapProber, nil
 	}
-	return blackboxprobers.NewModuleProber(module.BlackboxModule)
+	return blackboxprobers.NewModuleProber(probe.BlackboxModule)
 }
 
 func (probers *proberSet) probes(configuration exporterconfig.Configuration) ([]probeschedule.Probe, error) {
-	moduleProbers := map[string]probeschedule.Prober{}
-	for name, module := range configuration.Modules {
-		prober, err := probers.prober(module)
+	probeProbers := map[string]probeschedule.Prober{}
+	for name, probe := range configuration.Probes {
+		prober, err := probers.prober(probe)
 		if err != nil {
-			return nil, fmt.Errorf("module `%s`: %w", name, err)
+			return nil, fmt.Errorf("probe `%s`: %w", name, err)
 		}
-		moduleProbers[name] = prober
+		probeProbers[name] = prober
 	}
 	var probes []probeschedule.Probe
 	for _, probeTarget := range configuration.ProbeTargets() {
-		module := configuration.Modules[probeTarget.Module]
+		probe := configuration.Probes[probeTarget.Probe]
 		probes = append(probes, probeschedule.Probe{
 			Identity: probeschedule.ProbeIdentity{
-				Module:      probeTarget.Module,
+				Probe:       probeTarget.Probe,
 				TargetGroup: probeTarget.TargetGroup,
-				Target: probeschedule.Target{
-					Address:   probeTarget.Target,
-					Hostname:  probeTarget.Hostname,
-					QueryName: probeTarget.QueryName,
-				},
+				Target:      probeschedule.Target{Name: probeTarget.Name, Address: probeTarget.Address},
 			},
 			Labels:         probeTarget.Labels,
 			Interval:       probeTarget.Interval,
-			Timeout:        module.Timeout,
-			Prober:         moduleProbers[probeTarget.Module],
-			ProberSettings: module.WrittenText,
+			Timeout:        probe.Timeout,
+			Prober:         probeProbers[probeTarget.Probe],
+			ProberSettings: probe.WrittenSettings,
 		})
 	}
 	return probes, nil

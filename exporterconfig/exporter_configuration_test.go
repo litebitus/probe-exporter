@@ -9,49 +9,52 @@ import (
 	"time"
 )
 
-const mockConfiguration = `modules:
+const mockConfiguration = `version: "1"
+probes:
   mock_tls:
     prober: tcp
     timeout: 5s
+    interval: 5m
     tcp:
       preferred_ip_protocol: ip4
       tls: true
+    target_groups:
+      mock-cdn:
+        targets:
+          - name: mock-a.example
+            addresses: [192.0.2.10:443, 192.0.2.11:443]
+          - name: mock-b.example
+            addresses: [192.0.2.10:443]
+        labels:
+          mock_site: mock-cdn
   mock_registration:
     prober: rdap
     timeout: 10s
-  mock_lookup:
-    prober: dns
-    timeout: 3s
-    dns:
-      query_type: A
-probe_configs:
-  - module: mock_tls
-    interval: 5m
-    target_groups:
-      mock-cdn:
-        targets: [192.0.2.10:443, 192.0.2.11:443]
-        hostnames: [mock-a.example, mock-b.example]
-        labels:
-          mock_site: mock-cdn
-      mock-direct:
-        targets: [mock-direct.example:443]
-  - module: mock_registration
     interval: 6h
     target_groups:
       mock-domains:
-        targets: [mock-domain.example]
-  - module: mock_lookup
+        targets:
+          - name: mock-domain.example
+            addresses: [mock-domain.example]
+  mock_lookup:
+    prober: dns
+    timeout: 3s
     interval: 1m
+    dns:
+      query_type: A
     target_groups:
       mock-resolvers:
-        targets: [192.0.2.53]
-        query_names: [mock-name.example]
+        targets:
+          - name: mock-name.example
+            addresses: [192.0.2.53]
 max_concurrent_probes: 4
 `
 
+const mockSource = "mock-config.yml"
+
 func parsed(t *testing.T, text string) Configuration {
 	t.Helper()
-	configuration, err := Parse([]byte(text))
+	configuration, err := Parse(mockSource, []byte(text))
 	if err != nil {
 		t.Fatalf("the configuration does not parse: %v", err)
 	}
@@ -67,187 +70,235 @@ func changed(t *testing.T, old, replacement string) string {
 	return strings.Replace(mockConfiguration, old, replacement, 1)
 }
 
-func TestAConfigurationParsesIntoItsModulesAndProbeConfigs(t *testing.T) {
+// reportsProblem is whether a report names a problem whose message starts with a text, at a location, as a compiler reports one.
+func reportsProblem(err error, messageStart, location string) bool {
+	if err == nil {
+		return false
+	}
+	for _, renderedProblem := range strings.Split(err.Error(), "\n\n") {
+		headline, otherLines, _ := strings.Cut(renderedProblem, "\n")
+		locationLine, _, _ := strings.Cut(otherLines, "\n")
+		if strings.HasPrefix(headline, "error: "+messageStart) && strings.TrimSpace(locationLine) == "--> "+location {
+			return true
+		}
+	}
+	return false
+}
+
+func TestAConfigurationParsesIntoItsProbes(t *testing.T) {
 	configuration := parsed(t, mockConfiguration)
-	if configuration.MaxConcurrentProbes != 4 || len(configuration.Modules) != 3 || len(configuration.ProbeConfigs) != 3 {
+	if configuration.Version != "1.0" || configuration.MaxConcurrentProbes != 4 || len(configuration.Probes) != 3 {
 		t.Fatalf("configuration = %+v", configuration)
 	}
-	tls := configuration.Modules["mock_tls"]
-	if tls.Prober != "tcp" || tls.Timeout != 5*time.Second || !tls.BlackboxModule.TCP.TLS || !strings.Contains(tls.WrittenText, "tls: true") {
+	tls := configuration.Probes["mock_tls"]
+	if tls.Prober != "tcp" || tls.Timeout != 5*time.Second || tls.Interval != 5*time.Minute || !tls.BlackboxModule.TCP.TLS {
 		t.Errorf("mock_tls = %+v", tls)
 	}
-	registration := configuration.Modules["mock_registration"]
-	if registration.Prober != RDAPProber || registration.Timeout != 10*time.Second {
+	if strings.Contains(tls.WrittenSettings, "target_groups") || strings.Contains(tls.WrittenSettings, "interval") ||
+		!strings.Contains(tls.WrittenSettings, "tls: true") {
+		t.Errorf("mock_tls's written settings = %q", tls.WrittenSettings)
+	}
+	group := tls.TargetGroups["mock-cdn"]
+	if group.Labels["mock_site"] != "mock-cdn" || len(group.Targets) != 2 ||
+		!reflect.DeepEqual(group.Targets[0], Target{Name: "mock-a.example", Addresses: []string{"192.0.2.10:443", "192.0.2.11:443"}}) {
+		t.Errorf("mock-cdn = %+v", group)
+	}
+	registration := configuration.Probes["mock_registration"]
+	if registration.Prober != RDAPProber || registration.Timeout != 10*time.Second || registration.Interval != 6*time.Hour {
 		t.Errorf("mock_registration = %+v", registration)
 	}
-	group := configuration.ProbeConfigs[0].TargetGroups["mock-cdn"]
-	if configuration.ProbeConfigs[0].Interval != 5*time.Minute || group.Labels["mock_site"] != "mock-cdn" || len(group.Hostnames) != 2 {
-		t.Errorf("probe config = %+v", configuration.ProbeConfigs[0])
-	}
 }
 
-// Each target is probed once per hostname and query name its group states, and once when it states none.
-func TestEachTargetIsProbedOncePerHostnameAndQueryName(t *testing.T) {
-	var got []string
-	for _, probeTarget := range parsed(t, mockConfiguration).ProbeTargets() {
-		got = append(got, strings.Join([]string{
-			probeTarget.Module, probeTarget.TargetGroup, probeTarget.Target, probeTarget.Hostname, probeTarget.QueryName,
-		}, "|"))
-	}
-	want := []string{
-		"mock_tls|mock-cdn|192.0.2.10:443|mock-a.example|",
-		"mock_tls|mock-cdn|192.0.2.10:443|mock-b.example|",
-		"mock_tls|mock-cdn|192.0.2.11:443|mock-a.example|",
-		"mock_tls|mock-cdn|192.0.2.11:443|mock-b.example|",
-		"mock_tls|mock-direct|mock-direct.example:443||",
-		"mock_registration|mock-domains|mock-domain.example||",
-		"mock_lookup|mock-resolvers|192.0.2.53||mock-name.example",
-	}
-	if !reflect.DeepEqual(got, want) {
-		t.Errorf("probe targets =\n%s\nwant\n%s", strings.Join(got, "\n"), strings.Join(want, "\n"))
-	}
-}
-
-func TestAProbeTargetCarriesItsGroupsLabelsAndItsInterval(t *testing.T) {
-	probeTarget := parsed(t, mockConfiguration).ProbeTargets()[0]
-	if probeTarget.Labels["mock_site"] != "mock-cdn" || probeTarget.Interval != 5*time.Minute {
-		t.Errorf("probe target = %+v", probeTarget)
-	}
-}
-
-// Every value the exporter cannot use is refused, never corrected, and every problem is named at once.
-func TestEveryUnusableValueIsRefused(t *testing.T) {
-	for name, testCase := range map[string]struct {
-		text string
-		want string
-	}{
-		"empty":    {"", "the configuration is empty"},
-		"not yaml": {"modules: [", "failed to parse the configuration"},
-		"unknown field": {changed(t, "max_concurrent_probes: 4", "max_concurrent_probes: 4\nmock_field: 1"),
-			"field mock_field not found"},
-		"no modules":             {"probe_configs: []\nmax_concurrent_probes: 1\n", "`modules` is required, with at least one module"},
-		"unknown prober":         {changed(t, "prober: tcp", "prober: mock"), "module `mock_tls`: prober 'mock' is not valid"},
-		"unknown blackbox field": {changed(t, "query_type: A", "mock_setting: A"), "module `mock_lookup`:"},
-		"unknown rdap field": {changed(t, "prober: rdap\n    timeout: 10s", "prober: rdap\n    timeout: 10s\n    mock_setting: 1"),
-			"module `mock_registration`:"},
-		"no timeout": {changed(t, "prober: rdap\n    timeout: 10s", "prober: rdap"),
-			"module `mock_registration`: `timeout` is required, above zero"},
-		"no concurrency": {changed(t, "max_concurrent_probes: 4", "max_concurrent_probes: 0"),
-			"`max_concurrent_probes` is required, at least 1"},
-		"no probe configs": {mockConfiguration[:strings.Index(mockConfiguration, "probe_configs:")] + "max_concurrent_probes: 1\n",
-			"`probe_configs` is required, with at least one entry"},
-		"no module named": {changed(t, "  - module: mock_registration\n", "  - module: \"\"\n"),
-			"`probe_configs[1]`: `module` is required"},
-		"unknown module": {changed(t, "  - module: mock_registration\n", "  - module: mock_missing\n"),
-			"`probe_configs[1]`: `module` names `mock_missing`, which `modules` does not define"},
-		"no interval": {changed(t, "interval: 6h", "interval: 0s"), "`probe_configs[1]`: `interval` is required, above zero"},
-		"no groups": {changed(t, "interval: 6h\n    target_groups:\n      mock-domains:\n        targets: [mock-domain.example]",
-			"interval: 6h\n    target_groups: {}"), "`probe_configs[1]`: `target_groups` is required, with at least one group"},
-		"no targets": {changed(t, "targets: [mock-domain.example]", "targets: []"),
-			"target group `mock-domains`: `targets` is required, with at least one target"},
-		"empty target": {changed(t, "targets: [mock-domain.example]", `targets: ["", mock-domain.example]`),
-			"target group `mock-domains`: `targets` holds an empty value"},
-		"repeated target": {changed(t, "targets: [mock-domain.example]", "targets: [mock-domain.example, mock-domain.example]"),
-			"target group `mock-domains`: `targets` holds `mock-domain.example` twice"},
-		"repeated hostname": {changed(t, "hostnames: [mock-a.example, mock-b.example]", "hostnames: [mock-a.example, mock-a.example]"),
-			"`hostnames` holds `mock-a.example` twice"},
-		"label name": {changed(t, "mock_site: mock-cdn", "mock-site: mock-cdn"), "label `mock-site` is not a label name"},
-		"reserved label": {changed(t, "mock_site: mock-cdn", "target: mock-cdn"),
-			"label `target` is one the exporter sets on every series"},
-		"double underscore label": {changed(t, "mock_site: mock-cdn", "__mock: mock-cdn"), "label `__mock` is not a label name"},
-		"hostnames for rdap": {changed(t, "targets: [mock-domain.example]", "targets: [mock-domain.example]\n        hostnames: [mock-a.example]"),
-			"`hostnames` is for a module of the `http` or `tcp` prober, not `rdap`"},
-		"hostnames and a server name": {changed(t, "tls: true", "tls: true\n      tls_config:\n        server_name: mock-a.example"),
-			"`hostnames` is set, and its module states a TLS `server_name`"},
-		"query names for tcp": {changed(t, "targets: [mock-direct.example:443]", "targets: [mock-direct.example:443]\n        query_names: [mock-name.example]"),
-			"`query_names` is for a module of the `dns` prober, not `tcp`"},
-		"query names and a module query name": {changed(t, "query_type: A", "query_type: A\n      query_name: mock-name.example"),
-			"`query_names` is set, and its module states a `query_name`"},
-		"no query name": {changed(t, "        query_names: [mock-name.example]\n", ""),
-			"`query_names` is required, since its module states no `query_name`"},
-	} {
-		_, err := Parse([]byte(testCase.text))
-		if err == nil || !strings.Contains(err.Error(), testCase.want) {
-			t.Errorf("%s: err = %v, want %q", name, err, testCase.want)
+func TestAMinorStatedReadsAsItselfAndAMajorAsItsNewestMinor(t *testing.T) {
+	for stated, want := range map[string]string{`"1"`: "1.0", `"1.0"`: "1.0"} {
+		if got := parsed(t, changed(t, `version: "1"`, "version: "+stated)).Version; got != want {
+			t.Errorf("version %s reads as %s, want %s", stated, got, want)
 		}
 	}
 }
 
-func TestAnHTTPModuleWithAHostHeaderTakesNoHostnames(t *testing.T) {
-	text := `modules:
-  mock_web:
-    prober: http
-    timeout: 5s
-    http:
-      headers:
-        host: mock-a.example
-probe_configs:
-  - module: mock_web
-    interval: 1m
-    target_groups:
-      mock-sites:
-        targets: [https://192.0.2.10]
-        hostnames: [mock-b.example]
-max_concurrent_probes: 1
-`
-	_, err := Parse([]byte(text))
-	if want := "`hostnames` is set, and its module states a `Host` header"; err == nil || !strings.Contains(err.Error(), want) {
-		t.Errorf("err = %v, want %q", err, want)
+// Each target is run against once per address, its name with each.
+func TestEachTargetRunsOncePerAddress(t *testing.T) {
+	var got []string
+	for _, probeTarget := range parsed(t, mockConfiguration).ProbeTargets() {
+		got = append(got, strings.Join([]string{probeTarget.Probe, probeTarget.TargetGroup, probeTarget.Name, probeTarget.Address}, "|"))
+	}
+	want := []string{
+		"mock_lookup|mock-resolvers|mock-name.example|192.0.2.53",
+		"mock_registration|mock-domains|mock-domain.example|mock-domain.example",
+		"mock_tls|mock-cdn|mock-a.example|192.0.2.10:443",
+		"mock_tls|mock-cdn|mock-a.example|192.0.2.11:443",
+		"mock_tls|mock-cdn|mock-b.example|192.0.2.10:443",
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("runs =\n%s\nwant\n%s", strings.Join(got, "\n"), strings.Join(want, "\n"))
 	}
 }
 
-// A target probed the same way twice, by two probe configs naming the same module and group, is refused.
-func TestATargetProbedTheSameWayTwiceIsRefused(t *testing.T) {
-	text := mockConfiguration + `  - module: mock_registration
-    interval: 1h
-    target_groups:
-      mock-domains:
-        targets: [mock-domain.example]
-`
-	text = strings.Replace(text, "max_concurrent_probes: 4\n", "", 1) + "max_concurrent_probes: 4\n"
-	_, err := Parse([]byte(text))
-	want := "`probe_configs[3]`: target group `mock-domains`: target `mock-domain.example` is probed the same way in `probe_configs[1]`"
+func TestARunCarriesItsGroupsLabelsAndItsProbesInterval(t *testing.T) {
+	for _, probeTarget := range parsed(t, mockConfiguration).ProbeTargets() {
+		if probeTarget.TargetGroup == "mock-cdn" && (probeTarget.Labels["mock_site"] != "mock-cdn" || probeTarget.Interval != 5*time.Minute) {
+			t.Errorf("run = %+v", probeTarget)
+		}
+	}
+}
+
+// The version comes first: a file without one, or with one the exporter does not read, is checked no further.
+func TestTheVersionIsCheckedBeforeAnythingElse(t *testing.T) {
+	for name, testCase := range map[string]struct {
+		text, message, location string
+	}{
+		"missing":     {changed(t, `version: "1"`+"\n", ""), "`version` is required, quoted, one of `\"1\"` or `\"1.0\"`", mockSource + ":1:1"},
+		"unquoted":    {changed(t, `version: "1"`, "version: 1"), "`version` is required, quoted, one of `\"1\"` or `\"1.0\"`", mockSource + ":1:10"},
+		"not carried": {changed(t, `version: "1"`, `version: "2"`), "`version` `\"2\"` is not a version this exporter reads; it reads `\"1\"` or `\"1.0\"`", mockSource + ":1:10"},
+	} {
+		_, err := Parse(mockSource, []byte(testCase.text))
+		if !reportsProblem(err, testCase.message, testCase.location) || strings.Count(err.Error(), "error: ") != 1 {
+			t.Errorf("%s: err = %v, want only %q at %s", name, err, testCase.message, testCase.location)
+		}
+	}
+}
+
+// Every value the exporter cannot use is refused, never corrected, each problem reported at its line and column.
+func TestEveryUnusableValueIsReportedWhereItIs(t *testing.T) {
+	for name, testCase := range map[string]struct {
+		text, message, location string
+	}{
+		"empty":         {"", "the configuration is empty", mockSource + ":1:1"},
+		"not a mapping": {"- mock\n", "a configuration is a mapping of its fields", mockSource + ":1:1"},
+		"unknown field": {changed(t, "max_concurrent_probes: 4", "max_concurrent_probes: 4\nmock_field: 1"), "`mock_field` is not defined in the schema", mockSource + ":40:1"},
+		"unknown prober": {changed(t, "prober: tcp", "prober: mock"),
+			"`prober` must be one of `\"dns\"`, `\"grpc\"`, `\"http\"`, `\"icmp\"`, `\"rdap\"`, `\"tcp\"`, `\"unix\"`, `\"websocket\"`", mockSource + ":4:13"},
+		"misspelled blackbox setting": {changed(t, "      tls: true", "      tlss: true"), "`tlss` is not defined in the schema", mockSource + ":9:7"},
+		"settings of another prober":  {changed(t, "    prober: rdap\n", "    prober: rdap\n    tcp:\n      tls: true\n"), "`tcp` is not a valid key of `mock_registration`", mockSource + ":21:5"},
+		"no interval":                 {changed(t, "    interval: 6h\n", ""), "`interval` is required", mockSource + ":19:3"},
+		"no concurrency":              {changed(t, "max_concurrent_probes: 4", "max_concurrent_probes: 0"), "`max_concurrent_probes` must be >= `1`", mockSource + ":39:24"},
+		"reserved label":              {changed(t, "mock_site: mock-cdn", "probe: mock-cdn"), "`probe` is not a valid key of `labels`", mockSource + ":18:11"},
+		"tcp address without a port": {changed(t, "addresses: [192.0.2.10:443, 192.0.2.11:443]", "addresses: [192.0.2.10, 192.0.2.11:443]"),
+			"`addresses[0]` must match pattern", mockSource + ":14:25"},
+		"rdap address as a URL": {changed(t, "addresses: [mock-domain.example]", "addresses: [https://mock-domain.example]"),
+			"`addresses[0]` must match pattern", mockSource + ":27:25"},
+		"wildcard name": {changed(t, "name: mock-a.example", `name: "*.mock.example"`), "`name` must match pattern", mockSource + ":13:19"},
+		"no name": {changed(t, "          - name: mock-b.example\n            addresses: [192.0.2.10:443]\n", "          - addresses: [192.0.2.10:443]\n"),
+			"`name` is required", mockSource + ":15:13"},
+		"no addresses": {changed(t, "            addresses: [192.0.2.53]\n", ""), "`addresses` is required", mockSource + ":37:13"},
+		"unknown target field": {changed(t, "            addresses: [192.0.2.53]\n", "            addresses: [192.0.2.53]\n            mock_field: 1\n"),
+			"`mock_field` is not defined in the schema", mockSource + ":39:13"},
+		"a server name in the settings": {changed(t, "      tls: true", "      tls: true\n      tls_config:\n        server_name: mock-a.example"),
+			"`tls_config` matches a form that is not allowed", mockSource + ":11:9"},
+		"a query name in the settings": {changed(t, "query_type: A", "query_type: A\n      query_name: mock-name.example"),
+			"`dns` matches a form that is not allowed", mockSource + ":33:7"},
+		"a name checked at an address twice": {changed(t, "          - name: mock-b.example\n", "          - name: mock-a.example\n"),
+			"`mock-a.example` is checked at `192.0.2.10:443` twice in this group", mockSource + ":16:25"},
+		"zero timeout":  {changed(t, "timeout: 10s", "timeout: 0s"), "`timeout` must be above zero", mockSource + ":21:14"},
+		"zero interval": {changed(t, "interval: 6h", "interval: 0s"), "`interval` must be above zero", mockSource + ":22:15"},
+		"blackbox refuses the settings": {changed(t, "      tls: true", "      tls: true\n      query_response:\n        - expect: mock\n          expect_bytes: mock"),
+			"probe `mock_tls`: expect and expect_bytes are mutually exclusive", mockSource + ":3:3"},
+	} {
+		_, err := Parse(mockSource, []byte(testCase.text))
+		if !reportsProblem(err, testCase.message, testCase.location) {
+			t.Errorf("%s: err = %v\nwant %q at %s", name, err, testCase.message, testCase.location)
+		}
+	}
+}
+
+func TestASettingANameStandsInForCarriesWhyAsItsSchemaNote(t *testing.T) {
+	_, err := Parse(mockSource, []byte(changed(t, "      tls: true", "      tls: true\n      tls_config:\n        server_name: mock-a.example")))
+	want := "[schema] A `tcp` probe's targets each state the `name` sent as the TLS server name, so its `tls_config` states no `server_name`."
 	if err == nil || !strings.Contains(err.Error(), want) {
-		t.Errorf("err = %v, want %q", err, want)
+		t.Errorf("err = %v, want the note %q", err, want)
 	}
 }
 
-func TestAProbeConfigNamingAModuleThatFailedIsNotAlsoRefusedForIt(t *testing.T) {
-	_, err := Parse([]byte(changed(t, "prober: rdap\n    timeout: 10s", "prober: rdap")))
-	if err == nil || strings.Contains(err.Error(), "which `modules` does not define") {
+func TestEveryProblemIsReportedAtOnceAndCounted(t *testing.T) {
+	_, err := Parse(mockSource, []byte(changed(t, "interval: 6h", "interval: 6h\n    mock_field: 1")+"mock_other_field: 1\n"))
+	if err == nil || !strings.HasSuffix(err.Error(), "\n\n2 errors") {
 		t.Errorf("err = %v", err)
 	}
 }
 
-func TestTheDesignDocsExampleConfigurationLoads(t *testing.T) {
-	design, err := os.ReadFile(filepath.Join("..", "docs", "design.md"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	_, afterOpening, _ := strings.Cut(string(design), "```yaml\n")
-	example, _, _ := strings.Cut(afterOpening, "```")
-	configuration := parsed(t, example)
-	if len(configuration.ProbeTargets()) != 8 {
-		t.Errorf("probe targets = %+v", configuration.ProbeTargets())
+func TestAnHTTPProbesSettingsStateNoHostHeader(t *testing.T) {
+	text := `version: "1"
+probes:
+  mock_web:
+    prober: http
+    timeout: 5s
+    interval: 1m
+    http:
+      headers:
+        host: mock-a.example
+    target_groups:
+      mock-sites:
+        targets:
+          - name: mock-b.example
+            addresses: [https://192.0.2.10]
+max_concurrent_probes: 1
+`
+	_, err := Parse(mockSource, []byte(text))
+	if !reportsProblem(err, "`host` is not a valid key of `headers`", mockSource+":9:9") {
+		t.Errorf("err = %v", err)
 	}
 }
 
-func TestADNSModuleStatingItsQueryNameNeedsNoQueryNames(t *testing.T) {
-	configuration := parsed(t, strings.Replace(changed(t, "query_type: A", "query_type: A\n      query_name: mock-name.example"),
-		"        query_names: [mock-name.example]\n", "", 1))
-	if got := configuration.Modules["mock_lookup"].BlackboxModule.DNS.QueryName; got != "mock-name.example" {
+// Every prober takes its addresses in its own form.
+func TestEveryProberTakesItsAddressesInItsOwnForm(t *testing.T) {
+	for prober, testCase := range map[string]struct {
+		valid, invalid string
+	}{
+		"dns":       {"[192.0.2.53, 192.0.2.53:5353, mock-resolver.example, 2001:db8::53]", "[https://192.0.2.53]"},
+		"grpc":      {"[mock.example:9090, \"[2001:db8::1]:9090\"]", "[mock.example]"},
+		"http":      {"[https://mock.example/healthz, http://192.0.2.10:8080]", "[mock.example]"},
+		"icmp":      {"[mock.example, 192.0.2.10, 2001:db8::1]", "[mock.example:443]"},
+		"rdap":      {"[mock.example]", "[mock]"},
+		"tcp":       {"[mock.example:443, \"[2001:db8::1]:443\"]", "[mock.example:99999]"},
+		"unix":      {"[/run/mock.sock]", "[run/mock.sock]"},
+		"websocket": {"[wss://mock.example/socket, ws://192.0.2.10:8080]", "[https://mock.example]"},
+	} {
+		for _, addresses := range []string{testCase.valid, testCase.invalid} {
+			text := "version: \"1\"\nprobes:\n  mock_probe:\n    prober: " + prober + "\n    timeout: 5s\n    interval: 1m\n" +
+				"    target_groups:\n      mock-group:\n        targets:\n          - name: mock.example\n            addresses: " +
+				addresses + "\nmax_concurrent_probes: 1\n"
+			_, err := Parse(mockSource, []byte(text))
+			if refused := err != nil; refused != (addresses == testCase.invalid) {
+				t.Errorf("%s addresses %s: err = %v", prober, addresses, err)
+			}
+		}
+	}
+}
+
+func TestEveryExampleConfigurationLoads(t *testing.T) {
+	examples, err := filepath.Glob(filepath.Join("..", "examples", "*.yml"))
+	if err != nil || len(examples) == 0 {
+		t.Fatalf("examples = %v (%v)", examples, err)
+	}
+	for _, example := range examples {
+		if _, err := LoadFile(example); err != nil {
+			t.Errorf("%s: %v", example, err)
+		}
+	}
+}
+
+func TestADNSProbeTakesNoQueryNameOfItsOwn(t *testing.T) {
+	if got := parsed(t, mockConfiguration).Probes["mock_lookup"].BlackboxModule.DNS.QueryName; got != "" {
 		t.Errorf("query name = %q", got)
 	}
+	configuration := parsed(t, changed(t, "    dns:\n      query_type: A\n", ""))
+	if probe := configuration.Probes["mock_lookup"]; probe.Prober != "dns" || probe.BlackboxModule.DNS.QueryName != "" {
+		t.Errorf("mock_lookup = %+v", probe)
+	}
 }
 
-func TestAFileLoadsAsItsTextParses(t *testing.T) {
+func TestAFileLoadsAsItsTextParsesAndIsNamedByItsPath(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "mock-config.yml")
 	if err := os.WriteFile(path, []byte(mockConfiguration), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	configuration, err := LoadFile(path)
-	if err != nil || len(configuration.Modules) != 3 {
+	if configuration, err := LoadFile(path); err != nil || len(configuration.Probes) != 3 {
 		t.Errorf("configuration = %+v (%v)", configuration, err)
+	}
+	os.WriteFile(path, []byte(changed(t, "interval: 6h", "interval: 0s")), 0o600)
+	if _, err := LoadFile(path); !reportsProblem(err, "`interval` must be above zero", path+":22:15") {
+		t.Errorf("err = %v", err)
 	}
 	if _, err := LoadFile(filepath.Join(t.TempDir(), "mock-missing.yml")); err == nil ||
 		!strings.Contains(err.Error(), "failed to read the configuration file") {

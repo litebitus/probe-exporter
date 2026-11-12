@@ -14,21 +14,20 @@ import (
 	dto "github.com/prometheus/client_model/go"
 )
 
-// Target is what one probe probes: an address, and the hostname it is dialed as or the query name it is asked where its group states one.
+// Target is what one run is against: a name, and one address it is checked at.
 type Target struct {
-	Address   string
-	Hostname  string
-	QueryName string
+	Name    string
+	Address string
 }
 
-// Prober is a kind of check with its module's settings: it probes one target before the context's deadline, registers its series, writes its log, and answers whether the probe succeeded.
+// Prober is a kind of check with its probe's settings: it runs against one target before the context's deadline, registers its series, writes its log, and answers whether the run succeeded.
 type Prober interface {
 	Probe(ctx context.Context, target Target, registry *prometheus.Registry, logger *slog.Logger) bool
 }
 
-// ProbeIdentity names one probe: its module, its target group and its target.
+// ProbeIdentity names one probe run's place: the probe, its target group and its target.
 type ProbeIdentity struct {
-	Module      string
+	Probe       string
 	TargetGroup string
 	Target      Target
 }
@@ -142,7 +141,7 @@ func (probe Probe) fingerprint() string {
 func StaggerOffset(identity ProbeIdentity, interval time.Duration) time.Duration {
 	hash := fnv.New64a()
 	hash.Write([]byte(strings.Join([]string{
-		identity.Module, identity.TargetGroup, identity.Target.Address, identity.Target.Hostname, identity.Target.QueryName,
+		identity.Probe, identity.TargetGroup, identity.Target.Name, identity.Target.Address,
 	}, "\x00")))
 	return time.Duration(hash.Sum64() % uint64(interval))
 }
@@ -178,8 +177,8 @@ func (schedule *Schedule) runOnce(ctx context.Context, probe Probe) {
 	}
 	if !result.Success {
 		schedule.logger.Warn("probe failed",
-			"module", probe.Identity.Module, "target_group", probe.Identity.TargetGroup, "target", probe.Identity.Target.Address,
-			"hostname", probe.Identity.Target.Hostname, "query_name", probe.Identity.Target.QueryName)
+			"probe", probe.Identity.Probe, "target_group", probe.Identity.TargetGroup,
+			"name", probe.Identity.Target.Name, "target", probe.Identity.Target.Address)
 	}
 	schedule.keeper.Keep(result)
 }

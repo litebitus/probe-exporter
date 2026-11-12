@@ -73,7 +73,7 @@ func (keeper *mockKeeper) result(identity ProbeIdentity) (Result, bool) {
 }
 
 func mockIdentity(target string) ProbeIdentity {
-	return ProbeIdentity{Module: "mock_module", TargetGroup: "mock-group", Target: Target{Address: target}}
+	return ProbeIdentity{Probe: "mock_probe", TargetGroup: "mock-group", Target: Target{Address: target}}
 }
 
 func mockProbe(target string, prober Prober, interval time.Duration) Probe {

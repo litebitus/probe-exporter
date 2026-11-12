@@ -1,74 +1,80 @@
-// Package exporterconfig reads the exporter's configuration file: its modules, the targets each probes, and the bound on concurrent probes, refusing every value it cannot use.
+// Package exporterconfig reads the exporter's configuration file: it holds the file to the schema of the version it states before reading anything else, then to the rules a schema cannot state, and reports every problem at its line and column.
 package exporterconfig
 
 import (
 	"bytes"
 	"errors"
 	"fmt"
-	"io"
 	"os"
+	"slices"
+	"strconv"
+	"strings"
 	"time"
 
+	yamldslspec "github.com/litebitus/yaml-dsl-spec/go"
 	blackboxconfig "github.com/prometheus/blackbox_exporter/config"
 	"go.yaml.in/yaml/v3"
+
+	"github.com/litebitus/probe-exporter/schemas"
 )
 
 // RDAPProber is the prober the exporter adds to blackbox_exporter's.
 const RDAPProber = "rdap"
 
-// Configuration is a loaded configuration file.
+// Configuration is a loaded configuration file, and the minor version of the format it is read as.
 type Configuration struct {
-	Modules             map[string]Module
-	ProbeConfigs        []ProbeConfig
+	Version             string
+	Probes              map[string]Probe
 	MaxConcurrentProbes int
 }
 
-// Module is a prober with its settings, a blackbox prober's in blackbox_exporter's module format, and the module as written.
-type Module struct {
-	Prober         string
-	Timeout        time.Duration
-	BlackboxModule blackboxconfig.Module
-	WrittenText    string
+// Probe is a prober with its settings, how often it runs and its targets; a blackbox prober's settings in blackbox_exporter's module format, and the prober and its settings as written.
+type Probe struct {
+	Prober          string
+	Timeout         time.Duration
+	Interval        time.Duration
+	TargetGroups    map[string]TargetGroup
+	BlackboxModule  blackboxconfig.Module
+	WrittenSettings string
 }
 
-// ProbeConfig is a module, how often it probes, and its targets.
-type ProbeConfig struct {
-	Module       string
-	Interval     time.Duration
-	TargetGroups map[string]TargetGroup
-}
-
-// TargetGroup is targets and the settings they share.
+// TargetGroup is targets and the labels they share.
 type TargetGroup struct {
-	Targets    []string
-	Hostnames  []string
-	QueryNames []string
-	Labels     map[string]string
+	Targets []Target
+	Labels  map[string]string
+}
+
+// Target is a name and the addresses it is checked at, one run per address.
+type Target struct {
+	Name      string   `yaml:"name"`
+	Addresses []string `yaml:"addresses"`
 }
 
 type configurationFile struct {
-	Modules             map[string]yaml.Node `yaml:"modules"`
-	ProbeConfigs        []probeConfigEntry   `yaml:"probe_configs"`
+	Version             string               `yaml:"version"`
+	Probes              map[string]yaml.Node `yaml:"probes"`
 	MaxConcurrentProbes int                  `yaml:"max_concurrent_probes"`
 }
 
-type probeConfigEntry struct {
-	Module       string                      `yaml:"module"`
+// probeFieldsEntry is what a probe states beside its prober's settings: its prober, how often it runs and its targets.
+type probeFieldsEntry struct {
+	Prober       string                      `yaml:"prober"`
 	Interval     time.Duration               `yaml:"interval"`
 	TargetGroups map[string]targetGroupEntry `yaml:"target_groups"`
 }
 
 type targetGroupEntry struct {
-	Targets    []string          `yaml:"targets"`
-	Hostnames  []string          `yaml:"hostnames"`
-	QueryNames []string          `yaml:"query_names"`
-	Labels     map[string]string `yaml:"labels"`
+	Targets []Target          `yaml:"targets"`
+	Labels  map[string]string `yaml:"labels"`
 }
 
-type rdapModuleEntry struct {
+type rdapSettingsEntry struct {
 	Prober  string        `yaml:"prober"`
 	Timeout time.Duration `yaml:"timeout"`
 }
+
+// configurationSchemas are the schemas the exporter carries, each loaded once.
+var configurationSchemas = yamldslspec.NewSchemaCache()
 
 // LoadFile reads and checks the configuration file at a path.
 func LoadFile(path string) (Configuration, error) {
@@ -76,115 +82,174 @@ func LoadFile(path string) (Configuration, error) {
 	if err != nil {
 		return Configuration{}, fmt.Errorf("failed to read the configuration file: %w", err)
 	}
-	return Parse(text)
+	return Parse(path, text)
 }
 
-// Parse reads and checks a configuration's text, answering every problem it holds.
-func Parse(text []byte) (Configuration, error) {
+// Parse reads and checks a configuration's text, named in its problems as sourceName: first against the schema of the version it states, then against the rules a schema cannot state, answering every problem found.
+func Parse(sourceName string, text []byte) (Configuration, error) {
+	report := problemReport{sourceName: sourceName, text: string(text)}
+	root, readProblem := yamldslspec.ParseYAML(sourceName, string(text), nil)
+	if readProblem != nil {
+		return Configuration{}, report.of([]yamldslspec.Diagnostic{*readProblem})
+	}
+	if root.Kind == yamldslspec.NodeNull {
+		return Configuration{}, report.of([]yamldslspec.Diagnostic{yamldslspec.DiagnosticAt(root.Position, "the configuration is empty")})
+	}
+	minorVersion, shapeProblems, err := validateShape(root)
+	if err != nil {
+		return Configuration{}, err
+	}
+	if len(shapeProblems) > 0 {
+		return Configuration{}, report.of(shapeProblems)
+	}
 	var file configurationFile
-	if err := strictDecode(text, &file); errors.Is(err, io.EOF) {
-		return Configuration{}, errors.New("the configuration is empty")
-	} else if err != nil {
-		return Configuration{}, fmt.Errorf("failed to parse the configuration: %w", err)
+	if err := strictDecode(text, &file); err != nil {
+		return Configuration{}, report.of([]yamldslspec.Diagnostic{yamldslspec.UnplacedDiagnostic(err.Error())})
 	}
-	configuration := Configuration{
-		Modules:             map[string]Module{},
-		MaxConcurrentProbes: file.MaxConcurrentProbes,
-	}
-	var problems []error
-	if len(file.Modules) == 0 {
-		problems = append(problems, errors.New("`modules` is required, with at least one module"))
-	}
-	for name, node := range file.Modules {
-		module, err := decodeModule(&node)
+	configuration := Configuration{Version: minorVersion, Probes: map[string]Probe{}, MaxConcurrentProbes: file.MaxConcurrentProbes}
+	var problems []yamldslspec.Diagnostic
+	for name, node := range file.Probes {
+		probe, err := decodeProbe(&node)
 		if err != nil {
-			problems = append(problems, fmt.Errorf("module `%s`: %w", name, err))
+			problems = append(problems, placedAtKey(root, fmt.Sprintf("probe `%s`: %v", name, err), "probes", name))
 			continue
 		}
-		configuration.Modules[name] = module
+		configuration.Probes[name] = probe
 	}
-	for _, entry := range file.ProbeConfigs {
-		probeConfig := ProbeConfig{Module: entry.Module, Interval: entry.Interval, TargetGroups: map[string]TargetGroup{}}
-		for name, group := range entry.TargetGroups {
-			probeConfig.TargetGroups[name] = TargetGroup(group)
-		}
-		configuration.ProbeConfigs = append(configuration.ProbeConfigs, probeConfig)
-	}
-	writtenModules := map[string]bool{}
-	for name := range file.Modules {
-		writtenModules[name] = true
-	}
-	problems = append(problems, checkConfiguration(configuration, writtenModules)...)
+	problems = append(problems, checkConfiguration(configuration, root)...)
 	if len(problems) > 0 {
-		return Configuration{}, errors.Join(problems...)
+		return Configuration{}, report.of(problems)
 	}
 	return configuration, nil
 }
 
-func decodeModule(node *yaml.Node) (Module, error) {
-	text, err := yaml.Marshal(node)
+// validateShape holds a configuration to the schema its version names, answering the minor version it is read as and every problem; an error where that schema does not load.
+func validateShape(root yamldslspec.Node) (string, []yamldslspec.Diagnostic, error) {
+	if root.Kind != yamldslspec.NodeMap {
+		return "", []yamldslspec.Diagnostic{yamldslspec.DiagnosticAt(root.Position, "a configuration is a mapping of its fields")}, nil
+	}
+	versionNode, isWritten := root.Get("version")
+	stated, isText := versionNode.AsString()
+	if !isText {
+		versionPosition := root.Position
+		if isWritten {
+			versionPosition = versionNode.Position
+		}
+		return "", []yamldslspec.Diagnostic{
+			yamldslspec.DiagnosticAt(versionPosition, "`version` is required, quoted, one of "+statedVersionsList()),
+		}, nil
+	}
+	schemaText, minorVersion, err := schemas.SchemaFor(stated)
 	if err != nil {
-		return Module{}, err
+		return "", []yamldslspec.Diagnostic{
+			yamldslspec.DiagnosticAt(versionNode.Position, fmt.Sprintf("`version` `%s` is not a version this exporter reads; it reads %s",
+				strconv.Quote(stated), statedVersionsList())),
+		}, nil
 	}
-	var written struct {
-		Prober string `yaml:"prober"`
+	loadedSchema, err := configurationSchemas.Load("probe-exporter-v"+minorVersion+".schema.json", string(schemaText))
+	if err != nil {
+		return "", nil, fmt.Errorf("the schema of version %s cannot be read: %w", minorVersion, err)
 	}
-	if err := node.Decode(&written); err != nil {
-		return Module{}, err
-	}
-	module := Module{Prober: written.Prober, WrittenText: string(text)}
-	if written.Prober == RDAPProber {
-		var rdapModule rdapModuleEntry
-		if err := strictDecode(text, &rdapModule); err != nil {
-			return Module{}, err
-		}
-		module.Timeout = rdapModule.Timeout
-	} else {
-		decodedText, standsIn := text, false
-		if written.Prober == "dns" {
-			decodedText, standsIn, err = withStandInQueryName(node)
-			if err != nil {
-				return Module{}, err
-			}
-		}
-		if err := strictDecode(decodedText, &module.BlackboxModule); err != nil {
-			return Module{}, err
-		}
-		if standsIn {
-			module.BlackboxModule.DNS.QueryName = ""
-		}
-		module.Timeout = module.BlackboxModule.Timeout
-	}
-	if module.Timeout <= 0 {
-		return Module{}, errors.New("`timeout` is required, above zero")
-	}
-	return module, nil
+	return minorVersion, loadedSchema.Validate(yamldslspec.ResolvedValueFromNode(root), yamldslspec.ValidationRules{}), nil
 }
 
-// standInQueryName passes blackbox's required `query_name` check for a dns module whose target groups state the names asked.
+func statedVersionsList() string {
+	return quotedAlternatives(schemas.StatedVersions())
+}
+
+// quotedAlternatives are values written as alternatives, each quoted and fenced: `"a"`, `"b"` or `"c"`.
+func quotedAlternatives(values []string) string {
+	var quoted []string
+	for _, value := range values {
+		quoted = append(quoted, "`"+strconv.Quote(value)+"`")
+	}
+	if len(quoted) <= 1 {
+		return strings.Join(quoted, "")
+	}
+	return strings.Join(quoted[:len(quoted)-1], ", ") + " or " + quoted[len(quoted)-1]
+}
+
+// decodeProbe reads a probe: its interval and targets, then its prober and settings, a blackbox prober's as blackbox_exporter reads a module.
+func decodeProbe(probeNode *yaml.Node) (Probe, error) {
+	var written probeFieldsEntry
+	if err := probeNode.Decode(&written); err != nil {
+		return Probe{}, err
+	}
+	node := withoutKeys(probeNode, "interval", "target_groups")
+	text, err := yaml.Marshal(node)
+	if err != nil {
+		return Probe{}, err
+	}
+	probe := Probe{
+		Prober:          written.Prober,
+		Interval:        written.Interval,
+		TargetGroups:    map[string]TargetGroup{},
+		WrittenSettings: string(text),
+	}
+	for name, group := range written.TargetGroups {
+		probe.TargetGroups[name] = TargetGroup(group)
+	}
+	if written.Prober == RDAPProber {
+		var rdapSettings rdapSettingsEntry
+		if err := strictDecode(text, &rdapSettings); err != nil {
+			return Probe{}, err
+		}
+		probe.Timeout = rdapSettings.Timeout
+		return probe, nil
+	}
+	decodedText := text
+	if written.Prober == "dns" {
+		decodedText, err = withStandInQueryName(node)
+		if err != nil {
+			return Probe{}, err
+		}
+	}
+	if err := strictDecode(decodedText, &probe.BlackboxModule); err != nil {
+		return Probe{}, err
+	}
+	if written.Prober == "dns" {
+		probe.BlackboxModule.DNS.QueryName = ""
+	}
+	probe.Timeout = probe.BlackboxModule.Timeout
+	return probe, nil
+}
+
+// withoutKeys is a mapping node without the entries of some keys, the node itself left as it is.
+func withoutKeys(mapping *yaml.Node, keys ...string) *yaml.Node {
+	kept := *mapping
+	kept.Content = nil
+	for index := 0; index+1 < len(mapping.Content); index += 2 {
+		if !slices.Contains(keys, mapping.Content[index].Value) {
+			kept.Content = append(kept.Content, mapping.Content[index], mapping.Content[index+1])
+		}
+	}
+	return &kept
+}
+
+// standInQueryName passes blackbox's required `query_name` check for a dns probe, whose targets each state the name asked.
 const standInQueryName = "query-name.invalid"
 
-func withStandInQueryName(node *yaml.Node) ([]byte, bool, error) {
-	var module map[string]any
-	if err := node.Decode(&module); err != nil {
-		return nil, false, err
+// withStandInQueryName is a dns probe's settings with the stand-in query name, the schema having refused one stated.
+func withStandInQueryName(node *yaml.Node) ([]byte, error) {
+	var settings map[string]any
+	if err := node.Decode(&settings); err != nil {
+		return nil, err
 	}
-	dnsSettings, _ := module["dns"].(map[string]any)
+	dnsSettings, _ := settings["dns"].(map[string]any)
 	if dnsSettings == nil {
 		dnsSettings = map[string]any{}
 	}
-	if _, stated := dnsSettings["query_name"]; stated {
-		text, err := yaml.Marshal(node)
-		return text, false, err
-	}
 	dnsSettings["query_name"] = standInQueryName
-	module["dns"] = dnsSettings
-	text, err := yaml.Marshal(module)
-	return text, true, err
+	settings["dns"] = dnsSettings
+	return yaml.Marshal(settings)
 }
 
 func strictDecode(text []byte, into any) error {
 	decoder := yaml.NewDecoder(bytes.NewReader(text))
 	decoder.KnownFields(true)
-	return decoder.Decode(into)
+	err := decoder.Decode(into)
+	if err != nil {
+		return errors.New(strings.TrimPrefix(err.Error(), "yaml: "))
+	}
+	return nil
 }

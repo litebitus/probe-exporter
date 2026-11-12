@@ -6,52 +6,36 @@ import (
 	"time"
 )
 
-// ProbeTarget is one probe the configuration asks for: a module against one target, dialed as one hostname or asked one query name where its group states them.
+// ProbeTarget is one run's place: a probe, a target's name and one address it is checked at.
 type ProbeTarget struct {
-	Module      string
+	Probe       string
 	TargetGroup string
-	Target      string
-	Hostname    string
-	QueryName   string
+	Name        string
+	Address     string
 	Labels      map[string]string
 	Interval    time.Duration
 }
 
-// ProbeTargets are every probe the configuration asks for, in configuration order, each group's in name order.
+// ProbeTargets are every run's place, the probes and each probe's groups in name order, each group's targets in the order written.
 func (configuration Configuration) ProbeTargets() []ProbeTarget {
 	var probeTargets []ProbeTarget
-	for _, probeConfig := range configuration.ProbeConfigs {
-		for _, name := range slices.Sorted(maps.Keys(probeConfig.TargetGroups)) {
-			probeTargets = append(probeTargets, groupProbeTargets(probeConfig, name)...)
-		}
-	}
-	return probeTargets
-}
-
-func groupProbeTargets(probeConfig ProbeConfig, groupName string) []ProbeTarget {
-	group := probeConfig.TargetGroups[groupName]
-	var probeTargets []ProbeTarget
-	for _, target := range group.Targets {
-		for _, hostname := range valuesOrNone(group.Hostnames) {
-			for _, queryName := range valuesOrNone(group.QueryNames) {
-				probeTargets = append(probeTargets, ProbeTarget{
-					Module:      probeConfig.Module,
-					TargetGroup: groupName,
-					Target:      target,
-					Hostname:    hostname,
-					QueryName:   queryName,
-					Labels:      group.Labels,
-					Interval:    probeConfig.Interval,
-				})
+	for _, probeName := range slices.Sorted(maps.Keys(configuration.Probes)) {
+		probe := configuration.Probes[probeName]
+		for _, groupName := range slices.Sorted(maps.Keys(probe.TargetGroups)) {
+			group := probe.TargetGroups[groupName]
+			for _, target := range group.Targets {
+				for _, address := range target.Addresses {
+					probeTargets = append(probeTargets, ProbeTarget{
+						Probe:       probeName,
+						TargetGroup: groupName,
+						Name:        target.Name,
+						Address:     address,
+						Labels:      group.Labels,
+						Interval:    probe.Interval,
+					})
+				}
 			}
 		}
 	}
 	return probeTargets
-}
-
-func valuesOrNone(values []string) []string {
-	if len(values) == 0 {
-		return []string{""}
-	}
-	return values
 }
