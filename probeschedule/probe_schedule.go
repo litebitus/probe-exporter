@@ -14,11 +14,13 @@ import (
 	dto "github.com/prometheus/client_model/go"
 )
 
-// Target is what one run is against: an address, and the port and host the run takes, zero and empty where its prober takes none.
+// Target is what one run is against: an address, and the port and its protocol, the host and the record type the run takes, zero and empty where its prober takes none.
 type Target struct {
-	Address string
-	Port    int
-	Host    string
+	Address    string
+	Port       int
+	Protocol   string
+	Host       string
+	RecordType string
 }
 
 // Prober is a kind of check with its settings: it runs against one target before the context's deadline, registers its series, writes its log, and answers whether the run succeeded.
@@ -135,7 +137,8 @@ func (probe Probe) fingerprint() string {
 func StaggerOffset(identity ProbeIdentity, interval time.Duration) time.Duration {
 	hash := fnv.New64a()
 	hash.Write([]byte(strings.Join([]string{
-		identity.ProbeTarget, identity.Prober, identity.Target.Address, strconv.Itoa(identity.Target.Port), identity.Target.Host,
+		identity.ProbeTarget, identity.Prober, identity.Target.Address, strconv.Itoa(identity.Target.Port), identity.Target.Protocol,
+		identity.Target.Host, identity.Target.RecordType,
 	}, "\x00")))
 	return time.Duration(hash.Sum64() % uint64(interval))
 }
@@ -172,7 +175,8 @@ func (schedule *Schedule) runOnce(ctx context.Context, probe Probe) {
 	if !result.Success {
 		schedule.logger.Warn("probe failed",
 			"probe_target", probe.Identity.ProbeTarget, "prober", probe.Identity.Prober,
-			"address", probe.Identity.Target.Address, "port", probe.Identity.Target.Port, "host", probe.Identity.Target.Host)
+			"address", probe.Identity.Target.Address, "port", probe.Identity.Target.Port, "protocol", probe.Identity.Target.Protocol,
+			"host", probe.Identity.Target.Host, "record_type", probe.Identity.Target.RecordType)
 	}
 	schedule.keeper.Keep(result)
 }

@@ -53,7 +53,6 @@ func startExporter(t *testing.T, edge mockEdge, configuration string) *runningEx
 	go func() {
 		ended <- exporterapp.Run(ctx, []string{
 			"--config.file=" + exporter.configurationFile, "--web.listen-address=" + address, "--log.level=debug",
-			"--probes.max-concurrent=4",
 		}, edge.programSettings(exporter.reloadSignals))
 	}()
 	t.Cleanup(func() {
@@ -149,36 +148,43 @@ func (edge mockEdge) programSettings(reloadSignals chan os.Signal) exporterapp.P
 	}
 }
 
-// configuration checks the listener, as the target named, with the certificate, http and tcp probers, and two domains' registrations.
+// configuration checks the listener, as the target named, with the certificate, http and tcp probers, the target overriding the http path, and two domains' registrations.
 func (edge mockEdge) configuration(targetName string) string {
 	return `version: "1"
 probers:
   certificate:
-    interval: 100ms
-    timeout: 2s
-    ports: [` + edge.port + `]
+    interval: 500ms
+    timeout: 500ms
+    ports: [` + edge.port + `/tcp]
   domain_registration:
-    interval: 100ms
-    timeout: 2s
+    interval: 500ms
+    timeout: 500ms
+    ports: [443/rdap]
   http:
-    interval: 100ms
-    timeout: 2s
-    ports: [` + edge.port + `]
-    path: /mock-health
+    interval: 500ms
+    timeout: 500ms
+    ports: [` + edge.port + `/https]
+    path: /mock-missing
     status_codes: [200]
   tcp:
-    interval: 100ms
-    timeout: 2s
-    ports: [` + edge.port + `]
+    interval: 500ms
+    timeout: 500ms
 probe_targets:
   ` + targetName + `:
     addresses: [127.0.0.1]
-    probers: [certificate, http, tcp]
+    probers:
+      certificate: {}
+      http:
+        path: /mock-health
+      tcp:
+        ports: [` + edge.port + `/tcp]
     serves: [` + trustedHost + `]
   mock-domain.example:
-    probers: [domain_registration]
+    probers:
+      domain_registration: {}
   mock-missing.example:
-    probers: [domain_registration]
+    probers:
+      domain_registration: {}
 `
 }
 
@@ -186,17 +192,17 @@ probe_targets:
 func TestTheExporterServesEachConfiguredTargetsResult(t *testing.T) {
 	edge := startMockEdge(t)
 	exporter := startExporter(t, edge, edge.configuration("mock-cdn"))
-	place := func(prober string) string {
-		return `address="127.0.0.1",host="` + trustedHost + `",port="` + edge.port + `",probe_target="mock-cdn",prober="` + prober + `"`
+	place := func(prober, protocol string) string {
+		return `address="127.0.0.1",host="` + trustedHost + `",port="` + edge.port + "/" + protocol + `",probe_target="mock-cdn",prober="` + prober + `"`
 	}
 	want := []string{
-		`probe_success{` + place("certificate") + `} 1`,
-		`probe_ssl_earliest_cert_expiry{` + place("certificate") + `}`,
-		`probe_success{` + place("http") + `} 1`,
-		`probe_http_status_code{` + place("http") + `} 200`,
-		`probe_success{address="127.0.0.1",port="` + edge.port + `",probe_target="mock-cdn",prober="tcp"} 1`,
-		`probe_domain_registration_expiry_timestamp_seconds{address="mock-domain.example",probe_target="mock-domain.example",prober="domain_registration"} 1.8187344e+09`,
-		`probe_success{address="mock-missing.example",probe_target="mock-missing.example",prober="domain_registration"} 0`,
+		`probe_success{` + place("certificate", "tcp") + `} 1`,
+		`probe_ssl_earliest_cert_expiry{` + place("certificate", "tcp") + `}`,
+		`probe_success{` + place("http", "https") + `} 1`,
+		`probe_http_status_code{` + place("http", "https") + `} 200`,
+		`probe_success{address="127.0.0.1",port="` + edge.port + `/tcp",probe_target="mock-cdn",prober="tcp"} 1`,
+		`probe_domain_registration_expiry_timestamp_seconds{address="mock-domain.example",port="443/rdap",probe_target="mock-domain.example",prober="domain_registration"} 1.8187344e+09`,
+		`probe_success{address="mock-missing.example",port="443/rdap",probe_target="mock-missing.example",prober="domain_registration"} 0`,
 		`probe_exporter_config_last_reload_successful 1`,
 	}
 	waitFor(t, func() bool {
@@ -267,6 +273,8 @@ func TestTheExporterRefusesToStartWithoutAUsableConfiguration(t *testing.T) {
 	os.WriteFile(path, []byte("probers: ["), 0o600)
 	usable := filepath.Join(t.TempDir(), "mock-usable-config.yml")
 	os.WriteFile(usable, []byte(edge.configuration("mock-cdn")), 0o600)
+	tooLarge := filepath.Join(t.TempDir(), "mock-large-config.yml")
+	os.WriteFile(tooLarge, []byte(edge.configuration("mock-cdn")+strings.Repeat("#", 1<<20)), 0o600)
 	for name, testCase := range map[string]struct {
 		arguments []string
 		message   string
@@ -275,8 +283,7 @@ func TestTheExporterRefusesToStartWithoutAUsableConfiguration(t *testing.T) {
 		"unusable file":       {[]string{"--config.file=" + path, "--web.listen-address=" + freeAddress(t)}, "error: "},
 		"missing file":        {[]string{"--config.file=" + path + ".missing", "--web.listen-address=" + freeAddress(t)}, "failed to read the configuration file"},
 		"unusable web config": {[]string{"--config.file=" + usable, "--web.listen-address=" + freeAddress(t), "--web.config.file=" + path}, ""},
-		"no probes at once": {[]string{"--config.file=" + usable, "--web.listen-address=" + freeAddress(t), "--probes.max-concurrent=0"},
-			"--probes.max-concurrent must be at least 1, not 0"},
+		"a file too large":    {[]string{"--config.file=" + tooLarge, "--web.listen-address=" + freeAddress(t)}, "is larger than 1 MiB"},
 	} {
 		err := exporterapp.Run(context.Background(), testCase.arguments, edge.programSettings(nil))
 		if err == nil || !strings.Contains(err.Error(), testCase.message) {

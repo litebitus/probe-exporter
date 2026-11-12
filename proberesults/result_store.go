@@ -43,7 +43,7 @@ func (store *ResultStore) Retain(identities map[probeschedule.ProbeIdentity]bool
 	}
 }
 
-// Results are the held results, ordered by probe target, prober, address, port and host.
+// Results are the held results, ordered by probe target, prober, address, port, host and record type.
 func (store *ResultStore) Results() []probeschedule.Result {
 	store.mutex.RLock()
 	defer store.mutex.RUnlock()
@@ -53,7 +53,9 @@ func (store *ResultStore) Results() []probeschedule.Result {
 			cmp.Compare(left.Identity.Prober, right.Identity.Prober),
 			cmp.Compare(left.Identity.Target.Address, right.Identity.Target.Address),
 			cmp.Compare(left.Identity.Target.Port, right.Identity.Target.Port),
+			cmp.Compare(left.Identity.Target.Protocol, right.Identity.Target.Protocol),
 			cmp.Compare(left.Identity.Target.Host, right.Identity.Target.Host),
+			cmp.Compare(left.Identity.Target.RecordType, right.Identity.Target.RecordType),
 		)
 	})
 }
@@ -90,11 +92,14 @@ func resultLabels(result probeschedule.Result) []*dto.LabelPair {
 		"prober":       result.Identity.Prober,
 		"address":      result.Identity.Target.Address,
 	}
-	if result.Identity.Target.Port != 0 {
-		values["port"] = strconv.Itoa(result.Identity.Target.Port)
+	if result.Identity.Target.Protocol != "" {
+		values["port"] = strconv.Itoa(result.Identity.Target.Port) + "/" + result.Identity.Target.Protocol
 	}
 	if result.Identity.Target.Host != "" {
 		values["host"] = result.Identity.Target.Host
+	}
+	if result.Identity.Target.RecordType != "" {
+		values["record_type"] = result.Identity.Target.RecordType
 	}
 	var labels []*dto.LabelPair
 	for _, name := range slices.Sorted(maps.Keys(values)) {

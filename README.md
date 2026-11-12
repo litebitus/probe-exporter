@@ -5,9 +5,12 @@ An OpenMetrics exporter that owns its targets: its configuration names what is p
 ## Features
 
 - Each probe target lists its probers: `certificate`, `dns`, `domain_registration`, `http`, `ping` and `tcp`.
+- A prober's settings are stated once and overridden by a target where it differs.
+- Ports name the protocol spoken on them, as `443/tcp`, `80/http`, `53/udp` or `8/icmp`.
 - A target that serves several hosts at several addresses is checked for each host at each address, written once.
-- Checks run on their own schedule, staggered and bounded in how many run at once, and their latest results are served between runs.
-- Every series carries its `probe_target`, `prober`, `address`, and its `port` and `host` where the prober takes them.
+- Checks run on their own schedule, staggered, and their latest results are served between runs.
+- Everything is bounded: the configuration's size, each check's time and response body, each result's log, and how many checks are in flight at once.
+- Every series carries its `probe_target`, `prober`, `address`, and its `port`, `host` and `record_type` where the prober takes them.
 - blackbox_exporter's probers carry out most checks, imported as a library and run unchanged.
 - `domain_registration` reads a domain's registration expiry from its registry over RDAP.
 - The configuration is checked against its version's JSON Schema, in the editor as in the exporter, each problem reported at its line and column.

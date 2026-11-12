@@ -5,50 +5,68 @@ probers:
   certificate:
     interval: 5m
     timeout: 10s
-    ports: [443]
+    ports: [443/tcp]
   dns:
     interval: 1m
     timeout: 5s
+    ports: [53/udp]
+    record_types: [A]
   domain_registration:
     interval: 6h
     timeout: 10s
+    ports: [443/rdap]
   http:
     interval: 1m
     timeout: 10s
-    ports: [443]
+    ports: [443/https]
     path: /healthz
     status_codes: [200]
   ping:
     interval: 1m
     timeout: 5s
+    ports: [8/icmp]
   tcp:
     interval: 1m
     timeout: 5s
-    ports: [5432]
 
 probe_targets:
   example.com:
-    probers: [domain_registration]
-  example.org:
-    probers: [domain_registration]
+    probers:
+      domain_registration: {}
   mock-cdn:
     addresses: [mock-cdn.example.net]
-    probers: [certificate, http]
+    probers:
+      certificate: {}
+      http: {}
     serves:
       - api.example.com
       - static.example.com
       - www.example.com
   mock-database:
     addresses: [192.0.2.20]
-    probers: [ping, tcp]
+    probers:
+      ping: {}
+      tcp:
+        ports: [5432/tcp]
   mock-dns-servers:
     addresses: [192.0.2.53, 198.51.100.53]
-    probers: [dns]
+    probers:
+      dns:
+        record_types: [A, AAAA]
+        interval: 5m
+        timeout: 10s
     serves: [api.example.com, www.example.com]
   mock-web-servers:
     addresses:
       - 192.0.2.10
       - 192.0.2.11
       - 192.0.2.12
-    probers: [certificate, http, ping]
+    probers:
+      certificate:
+        ports: [443/tcp, 8443/tcp]
+      http:
+        ports: [80/http, 443/https]
+        path: /status
+        status_codes: [200, 204]
+      ping: {}
     serves: [api.example.com, www.example.org]

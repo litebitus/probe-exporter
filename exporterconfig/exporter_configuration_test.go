@@ -1,13 +1,15 @@
 package exporterconfig
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"reflect"
-	"strconv"
 	"strings"
 	"testing"
 	"time"
+
+	"go.yaml.in/yaml/v3"
 )
 
 const mockConfiguration = `version: "1"
@@ -15,20 +17,59 @@ probers:
   certificate:
     interval: 5m
     timeout: 5s
-    ports: [443, 8443]
+    ports: [443/tcp]
+  dns:
+    interval: 1m
+    timeout: 3s
+    ports: [53/udp]
+    record_types: [A]
   domain_registration:
     interval: 6h
     timeout: 10s
+    ports: [443/rdap]
+  http:
+    interval: 1m
+    timeout: 5s
+    ports: [443/https]
+    path: /healthz
+    status_codes: [200]
   ping:
+    interval: 1m
+    timeout: 3s
+    ports: [8/icmp]
+  tcp:
     interval: 1m
     timeout: 3s
 probe_targets:
   mock-cdn:
     addresses: [192.0.2.10, 192.0.2.11]
-    probers: [certificate, ping]
+    probers:
+      certificate:
+        ports: [443/tcp, 8443/tcp]
+      ping: {}
     serves: [mock-a.example, mock-b.example]
+  mock-database:
+    addresses: [192.0.2.20]
+    probers:
+      tcp:
+        ports: [5432/tcp]
   mock-domain.example:
-    probers: [domain_registration]
+    probers:
+      domain_registration: {}
+  mock-resolver:
+    addresses: [192.0.2.53]
+    probers:
+      dns:
+        record_types: [A, AAAA]
+        timeout: 4s
+    serves: [mock-a.example]
+  mock-web:
+    addresses: [192.0.2.30]
+    probers:
+      http:
+        ports: [80/http]
+        path: /status
+    serves: [mock-a.example]
 `
 
 const mockSource = "mock-config.yml"
@@ -51,6 +92,17 @@ func changed(t *testing.T, old, replacement string) string {
 	return strings.Replace(mockConfiguration, old, replacement, 1)
 }
 
+// locationOf is where a piece of text first starts in another, as a problem names it: the source, the line and the column.
+func locationOf(t *testing.T, text, piece string) string {
+	t.Helper()
+	index := strings.Index(text, piece)
+	if index < 0 {
+		t.Fatalf("the text holds no %q", piece)
+	}
+	before := text[:index]
+	return fmt.Sprintf("%s:%d:%d", mockSource, strings.Count(before, "\n")+1, index-strings.LastIndex(before, "\n"))
+}
+
 // reportsProblem is whether a report names a problem whose message starts with a text, at a location, as a compiler reports one.
 func reportsProblem(err error, messageStart, location string) bool {
 	if err == nil {
@@ -68,20 +120,39 @@ func reportsProblem(err error, messageStart, location string) bool {
 
 func TestAConfigurationParsesIntoItsProbersAndTargets(t *testing.T) {
 	configuration := parsed(t, mockConfiguration)
-	if configuration.Version != "1.0" || len(configuration.Probers) != 3 || len(configuration.ProbeTargets) != 2 {
+	if configuration.Version != "1.0" || len(configuration.Probers) != 6 || len(configuration.ProbeTargets) != 5 {
 		t.Fatalf("configuration = %+v", configuration)
 	}
-	wantSettings := ProberSettings{Interval: 5 * time.Minute, Timeout: 5 * time.Second, Ports: []int{443, 8443}}
-	if got := configuration.Probers[CertificateProber]; !reflect.DeepEqual(got, wantSettings) {
-		t.Errorf("certificate = %+v", got)
+	cdn := configuration.ProbeTargets["mock-cdn"]
+	if !reflect.DeepEqual(cdn.Addresses, []string{"192.0.2.10", "192.0.2.11"}) || !reflect.DeepEqual(cdn.Serves, []string{"mock-a.example", "mock-b.example"}) ||
+		!reflect.DeepEqual(cdn.Probers["certificate"].Ports, []Port{{443, "tcp"}, {8443, "tcp"}}) {
+		t.Errorf("mock-cdn = %+v", cdn)
 	}
-	wantTarget := ProbeTarget{
-		Probers:   []string{CertificateProber, PingProber},
-		Addresses: []string{"192.0.2.10", "192.0.2.11"},
-		Serves:    []string{"mock-a.example", "mock-b.example"},
-	}
-	if got := configuration.ProbeTargets["mock-cdn"]; !reflect.DeepEqual(got, wantTarget) {
-		t.Errorf("mock-cdn = %+v", got)
+}
+
+// A target checked by a prober takes the prober's settings, each overridden where the target states its own.
+func TestATargetOverridesTheProbersSettingsItStates(t *testing.T) {
+	configuration := parsed(t, mockConfiguration)
+	for name, testCase := range map[string]struct {
+		target, prober string
+		want           CheckSettings
+	}{
+		"the prober's own": {"mock-domain.example", "domain_registration", CheckSettings{
+			Interval: 6 * time.Hour, Timeout: 10 * time.Second, Ports: []Port{{443, "rdap"}},
+		}},
+		"ports overridden": {"mock-cdn", "certificate", CheckSettings{
+			Interval: 5 * time.Minute, Timeout: 5 * time.Second, Ports: []Port{{443, "tcp"}, {8443, "tcp"}},
+		}},
+		"timeout and record types overridden": {"mock-resolver", "dns", CheckSettings{
+			Interval: time.Minute, Timeout: 4 * time.Second, Ports: []Port{{53, "udp"}}, RecordTypes: []string{"A", "AAAA"},
+		}},
+		"ports and path overridden, status codes the prober's": {"mock-web", "http", CheckSettings{
+			Interval: time.Minute, Timeout: 5 * time.Second, Ports: []Port{{80, "http"}}, Path: "/status", StatusCodes: []int{200},
+		}},
+	} {
+		if got := configuration.CheckSettings(testCase.target, testCase.prober); !reflect.DeepEqual(got, testCase.want) {
+			t.Errorf("%s: settings = %+v, want %+v", name, got, testCase.want)
+		}
 	}
 }
 
@@ -93,72 +164,31 @@ func TestAMinorStatedReadsAsItselfAndAMajorAsItsNewestMinor(t *testing.T) {
 	}
 }
 
-func runPlaces(configuration Configuration) []string {
-	var places []string
-	for _, run := range configuration.Runs() {
-		places = append(places, strings.Join([]string{run.ProbeTarget, run.Prober, run.Address, strconv.Itoa(run.Port), run.Host}, "|"))
+// A target is checked by each of its probers: at every address, on every port, for every host it serves and every record type where the prober takes them; a domain is checked as itself.
+func TestEachProberChecksEachAddressPortHostAndRecordTypeItTakes(t *testing.T) {
+	var got []string
+	for _, run := range parsed(t, mockConfiguration).Runs() {
+		got = append(got, strings.Join([]string{run.ProbeTarget, run.Prober, run.Address, run.Port.String(), run.Host, run.RecordType}, "|"))
 	}
-	return places
-}
-
-// A target is checked by each of its probers: at every address, on every port the prober takes, for every host it serves where the prober asks for one; a domain is checked as itself.
-func TestEachProberChecksEachAddressPortAndHostItTakes(t *testing.T) {
 	want := []string{
-		"mock-cdn|certificate|192.0.2.10|443|mock-a.example",
-		"mock-cdn|certificate|192.0.2.10|443|mock-b.example",
-		"mock-cdn|certificate|192.0.2.10|8443|mock-a.example",
-		"mock-cdn|certificate|192.0.2.10|8443|mock-b.example",
-		"mock-cdn|certificate|192.0.2.11|443|mock-a.example",
-		"mock-cdn|certificate|192.0.2.11|443|mock-b.example",
-		"mock-cdn|certificate|192.0.2.11|8443|mock-a.example",
-		"mock-cdn|certificate|192.0.2.11|8443|mock-b.example",
-		"mock-cdn|ping|192.0.2.10|0|",
-		"mock-cdn|ping|192.0.2.11|0|",
-		"mock-domain.example|domain_registration|mock-domain.example|0|",
+		"mock-cdn|certificate|192.0.2.10|443/tcp|mock-a.example|",
+		"mock-cdn|certificate|192.0.2.10|443/tcp|mock-b.example|",
+		"mock-cdn|certificate|192.0.2.10|8443/tcp|mock-a.example|",
+		"mock-cdn|certificate|192.0.2.10|8443/tcp|mock-b.example|",
+		"mock-cdn|certificate|192.0.2.11|443/tcp|mock-a.example|",
+		"mock-cdn|certificate|192.0.2.11|443/tcp|mock-b.example|",
+		"mock-cdn|certificate|192.0.2.11|8443/tcp|mock-a.example|",
+		"mock-cdn|certificate|192.0.2.11|8443/tcp|mock-b.example|",
+		"mock-cdn|ping|192.0.2.10|8/icmp||",
+		"mock-cdn|ping|192.0.2.11|8/icmp||",
+		"mock-database|tcp|192.0.2.20|5432/tcp||",
+		"mock-domain.example|domain_registration|mock-domain.example|443/rdap||",
+		"mock-resolver|dns|192.0.2.53|53/udp|mock-a.example|A",
+		"mock-resolver|dns|192.0.2.53|53/udp|mock-a.example|AAAA",
+		"mock-web|http|192.0.2.30|80/http|mock-a.example|",
 	}
-	if got := runPlaces(parsed(t, mockConfiguration)); !reflect.DeepEqual(got, want) {
+	if !reflect.DeepEqual(got, want) {
 		t.Errorf("runs =\n%s\nwant\n%s", strings.Join(got, "\n"), strings.Join(want, "\n"))
-	}
-}
-
-func TestEveryProberTakesTheAddressesPortsAndHostsItNeeds(t *testing.T) {
-	text := `version: "1"
-probers:
-  dns:
-    interval: 1m
-    timeout: 3s
-  http:
-    interval: 1m
-    timeout: 5s
-    ports: [443]
-    path: /healthz
-    status_codes: [200, 204]
-  tcp:
-    interval: 1m
-    timeout: 3s
-    ports: [22, 5432]
-probe_targets:
-  mock-resolver:
-    addresses: [192.0.2.53]
-    probers: [dns]
-    serves: [mock-a.example]
-  mock-web:
-    addresses: [192.0.2.10]
-    probers: [http, tcp]
-    serves: [mock-a.example]
-`
-	want := []string{
-		"mock-resolver|dns|192.0.2.53|0|mock-a.example",
-		"mock-web|http|192.0.2.10|443|mock-a.example",
-		"mock-web|tcp|192.0.2.10|22|",
-		"mock-web|tcp|192.0.2.10|5432|",
-	}
-	configuration := parsed(t, text)
-	if got := runPlaces(configuration); !reflect.DeepEqual(got, want) {
-		t.Errorf("runs =\n%s\nwant\n%s", strings.Join(got, "\n"), strings.Join(want, "\n"))
-	}
-	if http := configuration.Probers[HTTPProber]; http.Path != "/healthz" || !reflect.DeepEqual(http.StatusCodes, []int{200, 204}) {
-		t.Errorf("http = %+v", http)
 	}
 }
 
@@ -181,39 +211,44 @@ func TestTheVersionIsCheckedBeforeAnythingElse(t *testing.T) {
 // Every value the exporter cannot use is refused, never corrected, each problem reported at its line and column.
 func TestEveryUnusableValueIsReportedWhereItIs(t *testing.T) {
 	for name, testCase := range map[string]struct {
-		text, message, location string
+		old, replacement, message, at string
 	}{
-		"empty":           {"", "the configuration is empty", mockSource + ":1:1"},
-		"not a mapping":   {"- mock\n", "a configuration is a mapping of its fields", mockSource + ":1:1"},
-		"unknown field":   {mockConfiguration + "mock_field: 1\n", "`mock_field` is not defined in the schema", mockSource + ":20:1"},
-		"unknown prober":  {changed(t, "  ping:", "  mock:"), "`mock` is not defined in the schema", mockSource + ":10:3"},
-		"no ports":        {changed(t, "    ports: [443, 8443]\n", ""), "`ports` is required", mockSource + ":3:3"},
-		"port too high":   {changed(t, "[443, 8443]", "[443, 70000]"), "`ports[1]` must be <= `65535`", mockSource + ":6:18"},
-		"unknown checker": {changed(t, "[certificate, ping]", "[certificate, mock]"), "`probers[1]` must be one of", mockSource + ":16:28"},
-		"no serves":       {changed(t, "    serves: [mock-a.example, mock-b.example]\n", ""), "`serves` is required", mockSource + ":14:3"},
-		"no addresses":    {changed(t, "    addresses: [192.0.2.10, 192.0.2.11]\n", ""), "`addresses` is required", mockSource + ":14:3"},
-		"addresses on a domain": {changed(t, "    probers: [domain_registration]", "    probers: [domain_registration]\n    addresses: [192.0.2.10]"),
-			"`addresses` matches a form that is not allowed", mockSource + ":20:16"},
-		"address with a port": {changed(t, "[192.0.2.10, 192.0.2.11]", "[192.0.2.10:443, 192.0.2.11]"),
-			"`addresses[0]` must match pattern", mockSource + ":15:17"},
-		"wildcard host": {changed(t, "[mock-a.example, mock-b.example]", `["*.mock.example", mock-b.example]`),
-			"`serves[0]` must match pattern", mockSource + ":17:14"},
-		"prober without settings": {changed(t, "  ping:\n    interval: 1m\n    timeout: 3s\n", ""),
-			"`ping` has no settings under `probers`", mockSource + ":13:28"},
-		"domain registration of a name that is no domain": {changed(t, "  mock-domain.example:", "  mock-domain:"),
-			"`mock-domain` is checked by `domain_registration`, so it is named by its domain", mockSource + ":18:3"},
-		"zero timeout":  {changed(t, "timeout: 10s", "timeout: 0s"), "`timeout` must be above zero", mockSource + ":9:14"},
-		"zero interval": {changed(t, "interval: 6h", "interval: 0s"), "`interval` must be above zero", mockSource + ":8:15"},
+		"unknown field":                            {"probe_targets:\n", "mock_field: 1\nprobe_targets:\n", "`mock_field` is not defined in the schema", "mock_field"},
+		"unknown prober":                           {"  tcp:\n    interval", "  mock:\n    interval", "`mock` is not defined in the schema", "mock:"},
+		"certificate on udp":                       {"ports: [443/tcp]", "ports: [443/udp]", "`ports[0]` must match pattern", "443/udp"},
+		"http on tcp":                              {"ports: [80/http]", "ports: [80/tcp]", "`ports[0]` must match pattern", "80/tcp"},
+		"a ping that is no echo":                   {"ports: [8/icmp]", "ports: [0/icmp]", "`ports[0]`", "0/icmp"},
+		"registration over whois":                  {"ports: [443/rdap]", "ports: [43/whois]", "`ports[0]`", "43/whois"},
+		"unknown record type":                      {"record_types: [A, AAAA]", "record_types: [A, MOCK]", "`record_types[1]` must be one of", "MOCK"},
+		"no serves":                                {"    serves: [mock-a.example, mock-b.example]\n", "", "`serves` is required", "mock-cdn:"},
+		"addresses on a domain":                    {"      domain_registration: {}\n", "      domain_registration: {}\n    addresses: [192.0.2.10]\n", "`addresses` matches a form that is not allowed", "[192.0.2.10]\n"},
+		"no settings under probers":                {"  tcp:\n    interval: 1m\n    timeout: 3s\n", "", "`tcp` has no settings under `probers`", "tcp:\n        ports"},
+		"no ports here or under probers":           {"      tcp:\n        ports: [5432/tcp]\n", "      tcp: {}\n", "`tcp` checks `mock-database` without `ports`; state it here or under `probers`", "tcp: {}"},
+		"no status codes anywhere":                 {"    status_codes: [200]\n", "", "`http` checks `mock-web` without `status_codes`", "http:\n        ports"},
+		"a timeout longer than the interval":       {"        timeout: 4s\n", "        timeout: 2m\n", "`dns` checks `mock-resolver` with a `timeout` of 2m0s, longer than its `interval` of 1m0s", "dns:\n        record"},
+		"a zero override":                          {"        timeout: 4s\n", "        timeout: 0s\n", "`timeout` must be above zero", "0s\n    serves"},
+		"a zero interval":                          {"interval: 6h", "interval: 0s", "`interval` must be above zero", "0s\n    timeout: 10s"},
+		"registration of a name that is no domain": {"  mock-domain.example:", "  mock-domain:", "`mock-domain` is checked by `domain_registration`, so it is named by its domain", "mock-domain:"},
 	} {
-		_, err := Parse(mockSource, []byte(testCase.text))
-		if !reportsProblem(err, testCase.message, testCase.location) {
-			t.Errorf("%s: err = %v\nwant %q at %s", name, err, testCase.message, testCase.location)
+		text := changed(t, testCase.old, testCase.replacement)
+		location := locationOf(t, text, testCase.at)
+		_, err := Parse(mockSource, []byte(text))
+		if !reportsProblem(err, testCase.message, location) {
+			t.Errorf("%s: err = %v\nwant %q at %s", name, err, testCase.message, location)
+		}
+	}
+}
+
+func TestTheEmptyAndTheUnmappedAreRefused(t *testing.T) {
+	for text, message := range map[string]string{"": "the configuration is empty", "- mock\n": "a configuration is a mapping of its fields"} {
+		if _, err := Parse(mockSource, []byte(text)); !reportsProblem(err, message, mockSource+":1:1") {
+			t.Errorf("%q: err = %v", text, err)
 		}
 	}
 }
 
 func TestAFieldNoProberOfTheTargetUsesCarriesWhyAsItsSchemaNote(t *testing.T) {
-	_, err := Parse(mockSource, []byte(changed(t, "    probers: [domain_registration]", "    probers: [domain_registration]\n    serves: [mock-a.example]")))
+	_, err := Parse(mockSource, []byte(changed(t, "      domain_registration: {}\n", "      domain_registration: {}\n    serves: [mock-a.example]\n")))
 	want := "[schema] A target is given `serves` only when a prober checking it asks for its hosts."
 	if err == nil || !strings.Contains(err.Error(), want) {
 		t.Errorf("err = %v, want the note %q", err, want)
@@ -224,6 +259,19 @@ func TestEveryProblemIsReportedAtOnceAndCounted(t *testing.T) {
 	_, err := Parse(mockSource, []byte(changed(t, "interval: 6h", "interval: 6h\n    mock_field: 1")+"mock_other_field: 1\n"))
 	if err == nil || !strings.HasSuffix(err.Error(), "\n\n2 errors") {
 		t.Errorf("err = %v", err)
+	}
+}
+
+func yamlNode(value string) *yaml.Node {
+	return &yaml.Node{Kind: yaml.ScalarNode, Value: value}
+}
+
+func TestAPortIsANumberAndItsProtocol(t *testing.T) {
+	var port Port
+	for _, written := range []string{"443", "mock/tcp", "443/"} {
+		if err := yamlNode(written).Decode(&port); err == nil {
+			t.Errorf("%q was read as a port", written)
+		}
 	}
 }
 
@@ -244,15 +292,29 @@ func TestAFileLoadsAsItsTextParsesAndIsNamedByItsPath(t *testing.T) {
 	if err := os.WriteFile(path, []byte(mockConfiguration), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if configuration, err := LoadFile(path); err != nil || len(configuration.ProbeTargets) != 2 {
+	if configuration, err := LoadFile(path); err != nil || len(configuration.ProbeTargets) != 5 {
 		t.Errorf("configuration = %+v (%v)", configuration, err)
 	}
-	os.WriteFile(path, []byte(changed(t, "interval: 6h", "interval: 0s")), 0o600)
-	if _, err := LoadFile(path); !reportsProblem(err, "`interval` must be above zero", path+":8:15") {
+	text := changed(t, "interval: 6h", "interval: 0s")
+	os.WriteFile(path, []byte(text), 0o600)
+	if _, err := LoadFile(path); !reportsProblem(err, "`interval` must be above zero", path+strings.TrimPrefix(locationOf(t, text, "0s\n    timeout: 10s"), mockSource)) {
 		t.Errorf("err = %v", err)
 	}
 	if _, err := LoadFile(filepath.Join(t.TempDir(), "mock-missing.yml")); err == nil ||
 		!strings.Contains(err.Error(), "failed to read the configuration file") {
 		t.Errorf("a missing file: err = %v", err)
+	}
+	if _, err := LoadFile(t.TempDir()); err == nil || !strings.Contains(err.Error(), "failed to read the configuration file") {
+		t.Errorf("a folder: err = %v", err)
+	}
+}
+
+func TestAConfigurationFileLargerThanItsLimitIsRefused(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "mock-config.yml")
+	if err := os.WriteFile(path, []byte(mockConfiguration+strings.Repeat("#", configurationSizeLimit)), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := LoadFile(path); err == nil || err.Error() != "the configuration file "+path+" is larger than 1 MiB" {
+		t.Errorf("err = %v", err)
 	}
 }

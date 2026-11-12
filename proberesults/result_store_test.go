@@ -26,7 +26,7 @@ func mockResult(host, address string, success bool, families ...*dto.MetricFamil
 		Identity: probeschedule.ProbeIdentity{
 			ProbeTarget: "mock-target",
 			Prober:      "certificate",
-			Target:      probeschedule.Target{Address: address, Port: 443, Host: host},
+			Target:      probeschedule.Target{Address: address, Port: 443, Protocol: "tcp", Host: host},
 		},
 		Success:  success,
 		Duration: 1500 * time.Millisecond,
@@ -44,20 +44,25 @@ func labelsOf(metric *dto.Metric) string {
 	return strings.Join(pairs, ",")
 }
 
-// Every series of a result carries its run's place, in label-name order, beside the prober's own; a port or host the run took none of is no label.
+// Every series of a result carries its run's place, in label-name order, beside the prober's own; a port, host or record type the run took none of is no label.
 func TestEachSeriesCarriesItsRunsPlace(t *testing.T) {
 	store := NewResultStore()
 	store.Keep(mockResult("mock-a.example", "192.0.2.10", true, mockFamily("mock_value", 7, "mock_prober_label", "mock")))
-	ping := mockResult("", "192.0.2.53", true, mockFamily("mock_value", 8))
-	ping.Identity.Prober, ping.Identity.Target.Port = "ping", 0
-	store.Keep(ping)
+	lookup := mockResult("mock-a.example", "192.0.2.53", true, mockFamily("mock_value", 8))
+	lookup.Identity.Prober, lookup.Identity.Target.Port, lookup.Identity.Target.Protocol = "dns", 53, "udp"
+	lookup.Identity.Target.RecordType = "AAAA"
+	store.Keep(lookup)
+	registration := mockResult("", "mock-domain.example", true, mockFamily("mock_value", 9))
+	registration.Identity.Prober, registration.Identity.Target.Port, registration.Identity.Target.Protocol = "domain_registration", 0, ""
+	store.Keep(registration)
 	families, err := store.Gather()
-	if err != nil || len(families) != 1 || len(families[0].Metric) != 2 {
+	if err != nil || len(families) != 1 || len(families[0].Metric) != 3 {
 		t.Fatalf("families = %v (%v)", families, err)
 	}
 	want := []string{
-		"address=192.0.2.10,host=mock-a.example,mock_prober_label=mock,port=443,probe_target=mock-target,prober=certificate",
-		"address=192.0.2.53,probe_target=mock-target,prober=ping",
+		"address=192.0.2.10,host=mock-a.example,mock_prober_label=mock,port=443/tcp,probe_target=mock-target,prober=certificate",
+		"address=192.0.2.53,host=mock-a.example,port=53/udp,probe_target=mock-target,prober=dns,record_type=AAAA",
+		"address=mock-domain.example,probe_target=mock-target,prober=domain_registration",
 	}
 	for index, metric := range families[0].Metric {
 		if got := labelsOf(metric); got != want[index] {
@@ -123,7 +128,7 @@ func TestTheResultsPageShowsEachRunWithItsLogEscaped(t *testing.T) {
 	body, _ := io.ReadAll(recorder.Body)
 	page := string(body)
 	for _, want := range []string{
-		"<td>mock-target</td>", "<td>certificate</td>", "<td>192.0.2.10:443</td>", "<td>443</td>", "<td>mock-a.example</td>",
+		"<td>mock-target</td>", "<td>certificate</td>", "<td>192.0.2.10:443</td>", "<td>443/tcp</td>", "<td>mock-a.example</td>",
 		`<span class="failed">failed</span>`, "2026-11-11T10:00:00Z", "<td>1.5s</td>", "mock log line &lt;script&gt;",
 	} {
 		if !strings.Contains(page, want) {

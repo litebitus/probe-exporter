@@ -3,8 +3,10 @@ package exporterconfig
 
 import (
 	"bytes"
+	"cmp"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"strconv"
 	"strings"
@@ -33,20 +35,83 @@ type Configuration struct {
 	ProbeTargets map[string]ProbeTarget
 }
 
-// ProberSettings are a prober's settings: how often it checks each target and how long a check may take, and what the prober itself takes.
+// ProberSettings are a prober's settings as written, once for every target the prober checks and again by a target to override them, each unset where not written.
 type ProberSettings struct {
-	Interval    time.Duration `yaml:"interval"`
-	Timeout     time.Duration `yaml:"timeout"`
-	Ports       []int         `yaml:"ports"`
-	Path        string        `yaml:"path"`
-	StatusCodes []int         `yaml:"status_codes"`
+	Interval    *time.Duration `yaml:"interval"`
+	Timeout     *time.Duration `yaml:"timeout"`
+	Ports       []Port         `yaml:"ports"`
+	Path        string         `yaml:"path"`
+	StatusCodes []int          `yaml:"status_codes"`
+	RecordTypes []string       `yaml:"record_types"`
 }
 
-// ProbeTarget is what is probed: the probers that check it, where it is reached, and the hosts it serves.
+// ProbeTarget is what is probed: where it is reached, the hosts it serves, and the probers that check it with the settings it overrides.
 type ProbeTarget struct {
-	Probers   []string `yaml:"probers"`
-	Addresses []string `yaml:"addresses"`
-	Serves    []string `yaml:"serves"`
+	Addresses []string                  `yaml:"addresses"`
+	Probers   map[string]ProberSettings `yaml:"probers"`
+	Serves    []string                  `yaml:"serves"`
+}
+
+// Port is a port and the protocol spoken on it, written `443/tcp`; for ICMP, the message type takes the port's place.
+type Port struct {
+	Number   int
+	Protocol string
+}
+
+// UnmarshalYAML reads a port written `<number>/<protocol>`.
+func (port *Port) UnmarshalYAML(node *yaml.Node) error {
+	number, protocol, isPaired := strings.Cut(node.Value, "/")
+	parsed, err := strconv.Atoi(number)
+	if !isPaired || err != nil || protocol == "" {
+		return fmt.Errorf("`%s` is not a port and its protocol, such as `443/tcp`", node.Value)
+	}
+	*port = Port{Number: parsed, Protocol: protocol}
+	return nil
+}
+
+func (port Port) String() string {
+	return strconv.Itoa(port.Number) + "/" + port.Protocol
+}
+
+// CheckSettings are the settings one prober checks one target with: the prober's own, each overridden where the target states it.
+type CheckSettings struct {
+	Interval    time.Duration
+	Timeout     time.Duration
+	Ports       []Port
+	Path        string
+	StatusCodes []int
+	RecordTypes []string
+}
+
+// CheckSettings are the settings a prober checks a target with.
+func (configuration Configuration) CheckSettings(targetName, proberName string) CheckSettings {
+	return resolved(configuration.Probers[proberName], configuration.ProbeTargets[targetName].Probers[proberName])
+}
+
+func resolved(prober, target ProberSettings) CheckSettings {
+	return CheckSettings{
+		Interval:    durationOf(cmp.Or(target.Interval, prober.Interval)),
+		Timeout:     durationOf(cmp.Or(target.Timeout, prober.Timeout)),
+		Ports:       writtenOr(target.Ports, prober.Ports),
+		Path:        cmp.Or(target.Path, prober.Path),
+		StatusCodes: writtenOr(target.StatusCodes, prober.StatusCodes),
+		RecordTypes: writtenOr(target.RecordTypes, prober.RecordTypes),
+	}
+}
+
+func durationOf(written *time.Duration) time.Duration {
+	if written == nil {
+		return 0
+	}
+	return *written
+}
+
+// writtenOr is the stated list where it is written, else the other.
+func writtenOr[Value any](stated, otherwise []Value) []Value {
+	if stated != nil {
+		return stated
+	}
+	return otherwise
 }
 
 type configurationFile struct {
@@ -58,11 +123,22 @@ type configurationFile struct {
 // configurationSchemas are the schemas the exporter carries, each loaded once.
 var configurationSchemas = yamldslspec.NewSchemaCache()
 
-// LoadFile reads and checks the configuration file at a path.
+// configurationSizeLimit is the largest configuration file the exporter reads.
+const configurationSizeLimit = 1 << 20
+
+// LoadFile reads and checks the configuration file at a path, refusing one larger than 1 MiB.
 func LoadFile(path string) (Configuration, error) {
-	text, err := os.ReadFile(path)
+	file, err := os.Open(path)
 	if err != nil {
 		return Configuration{}, fmt.Errorf("failed to read the configuration file: %w", err)
+	}
+	defer file.Close()
+	text, err := io.ReadAll(io.LimitReader(file, configurationSizeLimit+1))
+	if err != nil {
+		return Configuration{}, fmt.Errorf("failed to read the configuration file: %w", err)
+	}
+	if len(text) > configurationSizeLimit {
+		return Configuration{}, fmt.Errorf("the configuration file %s is larger than 1 MiB", path)
 	}
 	return Parse(path, text)
 }

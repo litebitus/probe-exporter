@@ -24,14 +24,15 @@ pre { margin: 0; white-space: pre-wrap; }
 <body>
 <h1>Latest results</h1>
 <table>
-<tr><th>Probe target</th><th>Prober</th><th>Address</th><th>Port</th><th>Host</th><th>Result</th><th>Ended at</th><th>Duration</th><th>Log</th></tr>
+<tr><th>Probe target</th><th>Prober</th><th>Address</th><th>Port</th><th>Host</th><th>Record type</th><th>Result</th><th>Ended at</th><th>Duration</th><th>Log</th></tr>
 {{- range .}}
 <tr>
 <td>{{.Identity.ProbeTarget}}</td>
 <td>{{.Identity.Prober}}</td>
 <td>{{.Identity.Target.Address}}</td>
-<td>{{with .Identity.Target.Port}}{{.}}{{end}}</td>
+<td>{{if .Identity.Target.Protocol}}{{.Identity.Target.Port}}/{{.Identity.Target.Protocol}}{{end}}</td>
 <td>{{.Identity.Target.Host}}</td>
+<td>{{.Identity.Target.RecordType}}</td>
 <td>{{if .Success}}succeeded{{else}}<span class="failed">failed</span>{{end}}</td>
 <td>{{.EndedAt.UTC.Format "2006-01-02T15:04:05Z"}}</td>
 <td>{{duration .Duration}}</td>

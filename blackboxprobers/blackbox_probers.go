@@ -1,4 +1,4 @@
-// Package blackboxprobers carries out the exporter's probers that blackbox_exporter's probers can make, each prober's settings turned into a blackbox module and each run's place into what blackbox's prober is handed, running exactly as blackbox's own handler does.
+// Package blackboxprobers carries out the exporter's probers that blackbox_exporter's probers can make, a check's settings turned into a blackbox module and each run's place into what blackbox's prober is handed, running exactly as blackbox's own handler does.
 package blackboxprobers
 
 import (
@@ -21,7 +21,10 @@ import (
 // standInQueryName passes blackbox's required `query_name` check; each run asks for its own host.
 const standInQueryName = "query-name.invalid"
 
-// BlackboxProber is one of the exporter's probers, with its settings, carried out by a blackbox prober.
+// responseBodyLimit is the most of a response body an `http` check reads.
+const responseBodyLimit = "1MiB"
+
+// BlackboxProber is one of the exporter's probers, with the settings it checks one target with, carried out by a blackbox prober.
 type BlackboxProber struct {
 	proberName string
 	module     blackboxconfig.Module
@@ -29,8 +32,8 @@ type BlackboxProber struct {
 	path       string
 }
 
-// NewBlackboxProber is the exporter's prober of a name, with its settings, its TLS checks trusting the certificate authorities in trustedAuthoritiesFile, or the system's where it is empty.
-func NewBlackboxProber(proberName string, settings exporterconfig.ProberSettings, trustedAuthoritiesFile string) (BlackboxProber, error) {
+// NewBlackboxProber is the exporter's prober of a name, with the settings it checks a target with, its TLS checks trusting the certificate authorities in trustedAuthoritiesFile, or the system's where it is empty.
+func NewBlackboxProber(proberName string, settings exporterconfig.CheckSettings, trustedAuthoritiesFile string) (BlackboxProber, error) {
 	moduleSettings, err := blackboxModuleSettings(proberName, settings, trustedAuthoritiesFile)
 	if err != nil {
 		return BlackboxProber{}, err
@@ -46,7 +49,7 @@ func NewBlackboxProber(proberName string, settings exporterconfig.ProberSettings
 	return BlackboxProber{proberName: proberName, module: module, probe: prober.Probers[module.Prober], path: settings.Path}, nil
 }
 
-func blackboxModuleSettings(proberName string, settings exporterconfig.ProberSettings, trustedAuthoritiesFile string) (map[string]any, error) {
+func blackboxModuleSettings(proberName string, settings exporterconfig.CheckSettings, trustedAuthoritiesFile string) (map[string]any, error) {
 	tlsSettings := map[string]any{}
 	if trustedAuthoritiesFile != "" {
 		tlsSettings["ca_file"] = trustedAuthoritiesFile
@@ -58,11 +61,12 @@ func blackboxModuleSettings(proberName string, settings exporterconfig.ProberSet
 		moduleSettings["tcp"] = map[string]any{"preferred_ip_protocol": "ip4", "tls": true, "tls_config": tlsSettings}
 	case exporterconfig.DNSProber:
 		moduleSettings["prober"] = "dns"
-		moduleSettings["dns"] = map[string]any{"preferred_ip_protocol": "ip4", "query_name": standInQueryName, "query_type": "A"}
+		moduleSettings["dns"] = map[string]any{"preferred_ip_protocol": "ip4", "query_name": standInQueryName}
 	case exporterconfig.HTTPProber:
 		moduleSettings["prober"] = "http"
 		moduleSettings["http"] = map[string]any{
 			"preferred_ip_protocol": "ip4", "valid_status_codes": settings.StatusCodes, "tls_config": tlsSettings,
+			"body_size_limit": responseBodyLimit,
 		}
 	case exporterconfig.PingProber:
 		moduleSettings["prober"] = "icmp"
@@ -76,7 +80,7 @@ func blackboxModuleSettings(proberName string, settings exporterconfig.ProberSet
 	return moduleSettings, nil
 }
 
-// Probe runs against one run's place: a certificate check asks the address and port for the host's certificate, a tcp check connects to the address and port, an http check requests the path from the address and port as the host, a dns check asks the address for the host, and a ping pings the address.
+// Probe runs against one run's place: a certificate check asks the address and port for the host's certificate, a tcp check connects to the address and port, an http check requests the path from the address and port as the host over the port's protocol, a dns check asks the address and port, over the port's protocol, for the host's record of the run's type, and a ping pings the address.
 func (blackboxProber BlackboxProber) Probe(ctx context.Context, target probeschedule.Target, registry *prometheus.Registry, logger *slog.Logger) bool {
 	module := blackboxProber.module
 	blackboxTarget := target.Address
@@ -95,9 +99,12 @@ func (blackboxProber BlackboxProber) Probe(ctx context.Context, target probesche
 		headers["Host"] = target.Host
 		module.HTTP.Headers = headers
 		module.HTTP.HTTPClientConfig.TLSConfig.ServerName = target.Host
-		blackboxTarget = "https://" + hostAndPort + blackboxProber.path
+		blackboxTarget = target.Protocol + "://" + hostAndPort + blackboxProber.path
 	case exporterconfig.DNSProber:
 		module.DNS.QueryName = target.Host
+		module.DNS.QueryType = target.RecordType
+		module.DNS.TransportProtocol = target.Protocol
+		blackboxTarget = hostAndPort
 	}
 	return blackboxProber.probe(ctx, blackboxTarget, module, registry, logger)
 }

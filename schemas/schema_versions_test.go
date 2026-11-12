@@ -147,40 +147,55 @@ probers:
   certificate:
     interval: 5m
     timeout: 5s
-    ports: [443]
+    ports: [443/tcp]
   dns:
     interval: 1m
     timeout: 3s
+    ports: [53/udp]
+    record_types: [A]
   domain_registration:
     interval: 6h
     timeout: 10s
+    ports: [443/rdap]
   http:
     interval: 1m
     timeout: 5s
-    ports: [443]
+    ports: [443/https]
     path: /healthz
     status_codes: [200]
   ping:
     interval: 1m
     timeout: 3s
+    ports: [8/icmp]
   tcp:
     interval: 1m
     timeout: 3s
-    ports: [5432]
 probe_targets:
   mock-cdn:
     addresses: [192.0.2.10, mock-cdn.example.net]
-    probers: [certificate, http]
+    probers:
+      certificate: {}
+      http:
+        ports: [80/http, 443/https]
+        path: /status
     serves: [mock-a.example]
   mock-database:
     addresses: [192.0.2.20]
-    probers: [ping, tcp]
+    probers:
+      ping: {}
+      tcp:
+        ports: [5432/tcp]
+        timeout: 1s
   mock-resolver:
     addresses: ["2001:db8::53"]
-    probers: [dns]
+    probers:
+      dns:
+        ports: [53/tcp]
+        record_types: [A, AAAA]
     serves: [mock-a.example]
   mock-domain.example:
-    probers: [domain_registration]
+    probers:
+      domain_registration: {}
 `
 
 // The schema refuses what the exporter refuses that a schema can state.
@@ -190,38 +205,44 @@ func TestTheSchemaRefusesWhatTheExporterRefuses(t *testing.T) {
 		t.Fatalf("the mock configuration is invalid: %v", err)
 	}
 	for name, change := range map[string][2]string{
-		"no version":                  {`version: "1"` + "\n", ""},
-		"unknown version":             {`version: "1"`, `version: "2"`},
-		"unknown field":               {"probe_targets:\n", "mock_field: 1\nprobe_targets:\n"},
-		"unknown prober settings":     {"  ping:\n", "  mock:\n"},
-		"unknown prober setting":      {"    path: /healthz\n", "    path: /healthz\n    mock_setting: 1\n"},
-		"no timeout":                  {"    timeout: 10s\n", ""},
-		"duration":                    {"interval: 6h", "interval: 1d"},
-		"no ports":                    {"    ports: [5432]\n", ""},
-		"no port":                     {"ports: [5432]", "ports: []"},
-		"port zero":                   {"ports: [5432]", "ports: [0]"},
-		"port too high":               {"ports: [5432]", "ports: [70000]"},
-		"repeated port":               {"ports: [5432]", "ports: [5432, 5432]"},
-		"path without a slash":        {"path: /healthz", "path: healthz"},
-		"no status codes":             {"    status_codes: [200]\n", ""},
-		"status code too high":        {"status_codes: [200]", "status_codes: [600]"},
-		"no targets":                  {"probe_targets:\n", "probe_targets: {}\nmock_targets:\n"},
-		"target name with a space":    {"  mock-cdn:", "  mock cdn:"},
-		"no probers":                  {"    probers: [ping, tcp]\n", ""},
-		"empty probers":               {"probers: [ping, tcp]", "probers: []"},
-		"unknown prober":              {"probers: [ping, tcp]", "probers: [ping, mock]"},
-		"repeated prober":             {"probers: [ping, tcp]", "probers: [ping, ping]"},
-		"certificate without serves":  {"    serves: [mock-a.example]\n  mock-database:", "  mock-database:"},
-		"ping without addresses":      {"    addresses: [192.0.2.20]\n", ""},
-		"addresses on a domain":       {"    probers: [domain_registration]\n", "    probers: [domain_registration]\n    addresses: [192.0.2.10]\n"},
-		"serves on a domain":          {"    probers: [domain_registration]\n", "    probers: [domain_registration]\n    serves: [mock-a.example]\n"},
-		"serves on a ping":            {"    probers: [ping, tcp]\n", "    probers: [ping, tcp]\n    serves: [mock-a.example]\n"},
-		"address with a port":         {"addresses: [192.0.2.20]", "addresses: [192.0.2.20:5432]"},
-		"address as a URL":            {"addresses: [192.0.2.20]", "addresses: [https://192.0.2.20]"},
-		"repeated address":            {"addresses: [192.0.2.20]", "addresses: [192.0.2.20, 192.0.2.20]"},
-		"wildcard host":               {"serves: [mock-a.example]\n  mock-database:", "serves: [\"*.mock.example\"]\n  mock-database:"},
-		"unknown target field":        {"    probers: [domain_registration]\n", "    probers: [domain_registration]\n    mock_field: 1\n"},
-		"a field of the earlier form": {"  certificate:\n", "  certificate:\n    prober: tcp\n"},
+		"no version":                        {`version: "1"` + "\n", ""},
+		"unknown version":                   {`version: "1"`, `version: "2"`},
+		"unknown field":                     {"probe_targets:\n", "mock_field: 1\nprobe_targets:\n"},
+		"unknown prober settings":           {"  ping:\n    interval", "  mock:\n    interval"},
+		"unknown prober setting":            {"    path: /healthz\n", "    path: /healthz\n    mock_setting: 1\n"},
+		"a prober without a timeout":        {"    timeout: 10s\n", ""},
+		"duration":                          {"interval: 6h", "interval: 1d"},
+		"no port":                           {"ports: [443/tcp]", "ports: []"},
+		"a port without its protocol":       {"ports: [443/tcp]", "ports: [443]"},
+		"port zero":                         {"ports: [443/tcp]", "ports: [0/tcp]"},
+		"port too high":                     {"ports: [443/tcp]", "ports: [70000/tcp]"},
+		"repeated port":                     {"ports: [443/tcp]", "ports: [443/tcp, 443/tcp]"},
+		"certificate on udp":                {"ports: [443/tcp]", "ports: [443/udp]"},
+		"http on tcp":                       {"ports: [443/https]", "ports: [443/tcp]"},
+		"dns over http":                     {"ports: [53/udp]", "ports: [53/http]"},
+		"a ping that is no echo":            {"ports: [8/icmp]", "ports: [0/icmp]"},
+		"registration over whois":           {"ports: [443/rdap]", "ports: [43/whois]"},
+		"unknown record type":               {"record_types: [A]", "record_types: [MOCK]"},
+		"path without a slash":              {"path: /healthz", "path: healthz"},
+		"status code too high":              {"status_codes: [200]", "status_codes: [600]"},
+		"no targets":                        {"probe_targets:\n", "probe_targets: {}\nmock_targets:\n"},
+		"target name with a space":          {"  mock-cdn:", "  mock cdn:"},
+		"no probers":                        {"    probers:\n      ping: {}\n      tcp:\n", "    mock_probers:\n      ping: {}\n      tcp:\n"},
+		"empty probers":                     {"      domain_registration: {}\n", "      {}\n"},
+		"unknown target prober":             {"      ping: {}\n", "      mock: {}\n"},
+		"a target's prober setting unknown": {"        timeout: 1s\n", "        mock_setting: 1\n"},
+		"a target's prober as a list":       {"      ping: {}\n", "      ping: []\n"},
+		"certificate without serves":        {"    serves: [mock-a.example]\n  mock-database:", "  mock-database:"},
+		"ping without addresses":            {"    addresses: [192.0.2.20]\n", ""},
+		"addresses on a domain":             {"      domain_registration: {}\n", "      domain_registration: {}\n    addresses: [192.0.2.10]\n"},
+		"serves on a domain":                {"      domain_registration: {}\n", "      domain_registration: {}\n    serves: [mock-a.example]\n"},
+		"serves on a ping":                  {"        timeout: 1s\n", "        timeout: 1s\n    serves: [mock-a.example]\n"},
+		"address with a port":               {"addresses: [192.0.2.20]", "addresses: [192.0.2.20:5432]"},
+		"address as a URL":                  {"addresses: [192.0.2.20]", "addresses: [https://192.0.2.20]"},
+		"repeated address":                  {"addresses: [192.0.2.20]", "addresses: [192.0.2.20, 192.0.2.20]"},
+		"wildcard host":                     {"serves: [mock-a.example]\n  mock-database:", "serves: [\"*.mock.example\"]\n  mock-database:"},
+		"unknown target field":              {"      domain_registration: {}\n", "      domain_registration: {}\n    mock_field: 1\n"},
+		"a field of an earlier form":        {"  certificate:\n", "  certificate:\n    prober: tcp\n"},
 	} {
 		if !strings.Contains(mockConfiguration, change[0]) {
 			t.Fatalf("%s: the mock configuration holds no %q", name, change[0])

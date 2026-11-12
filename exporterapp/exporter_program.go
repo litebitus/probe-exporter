@@ -49,7 +49,6 @@ func Run(ctx context.Context, arguments []string, settings ProgramSettings) erro
 	configurationFile := application.Flag("config.file", "The configuration file.").Required().String()
 	listenAddresses := application.Flag("web.listen-address", "An address to listen on; repeatable.").Required().Strings()
 	webConfigFile := application.Flag("web.config.file", "The exporter-toolkit web configuration, for TLS and authentication.").Default("").String()
-	maxConcurrentProbes := application.Flag("probes.max-concurrent", "How many probes run at once.").Default("8").Int()
 	logConfig := &promslog.Config{Writer: settings.Output}
 	promslogflag.AddFlags(application, logConfig)
 	_, err := application.Parse(arguments)
@@ -59,19 +58,20 @@ func Run(ctx context.Context, arguments []string, settings ProgramSettings) erro
 	if err != nil {
 		return err
 	}
-	if *maxConcurrentProbes < 1 {
-		return fmt.Errorf("--probes.max-concurrent must be at least 1, not %d", *maxConcurrentProbes)
-	}
 	logger := promslog.New(logConfig)
+	checksInFlight, err := checksInFlightLimit()
+	if err != nil {
+		return err
+	}
 
 	program := &exporterProgram{
 		logger:            logger,
 		configurationFile: *configurationFile,
 		probers: newProberSet(rdapprober.NewBootstrap(settings.RDAPBootstrapURL, settings.HTTPClient), settings.HTTPClient,
 			settings.TrustedAuthoritiesFile),
-		store:               proberesults.NewResultStore(),
-		ownRegistry:         prometheus.NewRegistry(),
-		maxConcurrentProbes: *maxConcurrentProbes,
+		store:          proberesults.NewResultStore(),
+		ownRegistry:    prometheus.NewRegistry(),
+		checksInFlight: checksInFlight,
 	}
 	program.schedule = probeschedule.NewSchedule(program.store, logger)
 	defer program.schedule.Stop()
@@ -80,7 +80,13 @@ func Run(ctx context.Context, arguments []string, settings ProgramSettings) erro
 		return err
 	}
 
-	server := &http.Server{Handler: program.endpoints(), ReadHeaderTimeout: 10 * time.Second}
+	server := &http.Server{
+		Handler:           program.endpoints(),
+		ReadHeaderTimeout: 10 * time.Second,
+		ReadTimeout:       30 * time.Second,
+		WriteTimeout:      60 * time.Second,
+		IdleTimeout:       120 * time.Second,
+	}
 	served := make(chan error, 1)
 	go func() {
 		systemdSocket := false
@@ -110,15 +116,15 @@ func Run(ctx context.Context, arguments []string, settings ProgramSettings) erro
 }
 
 type exporterProgram struct {
-	logger              *slog.Logger
-	configurationFile   string
-	probers             *proberSet
-	store               *proberesults.ResultStore
-	schedule            *probeschedule.Schedule
-	ownRegistry         *prometheus.Registry
-	maxConcurrentProbes int
-	reloadSuccessful    prometheus.Gauge
-	reloadSucceededAt   prometheus.Gauge
+	logger            *slog.Logger
+	configurationFile string
+	probers           *proberSet
+	store             *proberesults.ResultStore
+	schedule          *probeschedule.Schedule
+	ownRegistry       *prometheus.Registry
+	checksInFlight    int
+	reloadSuccessful  prometheus.Gauge
+	reloadSucceededAt prometheus.Gauge
 }
 
 func (program *exporterProgram) registerOwnSeries() {
@@ -144,7 +150,7 @@ func (program *exporterProgram) load() error {
 		var probes []probeschedule.Probe
 		probes, err = program.probers.probes(configuration)
 		if err == nil {
-			program.schedule.Apply(probes, program.maxConcurrentProbes)
+			program.schedule.Apply(probes, program.checksInFlight)
 		}
 	}
 	if err != nil {

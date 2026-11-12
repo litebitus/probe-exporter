@@ -19,34 +19,76 @@
       ]
     },
     "probers": {
-      "description": "Prober name to its settings.",
+      "description": "Prober name to its settings, which every target the prober checks takes unless the target states its own.",
       "type": "object",
       "additionalProperties": false,
       "minProperties": 1,
       "properties": {
         "certificate": {
           "description": "Settings of the `certificate` prober, which checks the certificate a target presents for each host it serves.",
-          "$ref": "#/$defs/certificate_settings"
+          "allOf": [
+            {
+              "$ref": "#/$defs/certificate_settings"
+            },
+            {
+              "$ref": "#/$defs/timing_required"
+            }
+          ]
         },
         "dns": {
-          "description": "Settings of the `dns` prober, which asks a target, a DNS server, for each host it serves.",
-          "$ref": "#/$defs/check_timing"
+          "description": "Settings of the `dns` prober, which asks a target, a DNS server, for the records of each host it serves.",
+          "allOf": [
+            {
+              "$ref": "#/$defs/dns_settings"
+            },
+            {
+              "$ref": "#/$defs/timing_required"
+            }
+          ]
         },
         "domain_registration": {
           "description": "Settings of the `domain_registration` prober, which reads when a domain's registration expires.",
-          "$ref": "#/$defs/check_timing"
+          "allOf": [
+            {
+              "$ref": "#/$defs/domain_registration_settings"
+            },
+            {
+              "$ref": "#/$defs/timing_required"
+            }
+          ]
         },
         "http": {
-          "description": "Settings of the `http` prober, which requests a path from a target for each host it serves.",
-          "$ref": "#/$defs/http_settings"
+          "description": "Settings of the `http` prober, which requests a path from a target as each host it serves.",
+          "allOf": [
+            {
+              "$ref": "#/$defs/http_settings"
+            },
+            {
+              "$ref": "#/$defs/timing_required"
+            }
+          ]
         },
         "ping": {
           "description": "Settings of the `ping` prober, which pings a target.",
-          "$ref": "#/$defs/check_timing"
+          "allOf": [
+            {
+              "$ref": "#/$defs/ping_settings"
+            },
+            {
+              "$ref": "#/$defs/timing_required"
+            }
+          ]
         },
         "tcp": {
           "description": "Settings of the `tcp` prober, which connects to a target's ports.",
-          "$ref": "#/$defs/tcp_settings"
+          "allOf": [
+            {
+              "$ref": "#/$defs/tcp_settings"
+            },
+            {
+              "$ref": "#/$defs/timing_required"
+            }
+          ]
         }
       }
     },
@@ -91,41 +133,20 @@
       "description": "How long one check may take.",
       "$ref": "#/$defs/duration"
     },
-    "ports": {
-      "description": "The ports the prober connects to, such as `443`.",
-      "type": "array",
-      "minItems": 1,
-      "uniqueItems": true,
-      "items": {
-        "type": "integer",
-        "minimum": 1,
-        "maximum": 65535
-      }
-    },
-    "check_timing": {
-      "type": "object",
-      "additionalProperties": false,
+    "timing_required": {
       "required": [
         "interval",
         "timeout"
-      ],
-      "properties": {
-        "interval": {
-          "$ref": "#/$defs/interval"
-        },
-        "timeout": {
-          "$ref": "#/$defs/timeout"
-        }
-      }
+      ]
+    },
+    "port_list": {
+      "type": "array",
+      "minItems": 1,
+      "uniqueItems": true
     },
     "certificate_settings": {
       "type": "object",
       "additionalProperties": false,
-      "required": [
-        "interval",
-        "timeout",
-        "ports"
-      ],
       "properties": {
         "interval": {
           "$ref": "#/$defs/interval"
@@ -134,20 +155,77 @@
           "$ref": "#/$defs/timeout"
         },
         "ports": {
-          "$ref": "#/$defs/ports"
+          "description": "The ports the prober connects to, each a port and its protocol, such as `443/tcp`.",
+          "$ref": "#/$defs/port_list",
+          "items": {
+            "type": "string",
+            "pattern": "^(6553[0-5]|655[0-2][0-9]|65[0-4][0-9]{2}|6[0-4][0-9]{3}|[1-5][0-9]{4}|[1-9][0-9]{0,3})/tcp$"
+          }
+        }
+      }
+    },
+    "dns_settings": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "interval": {
+          "$ref": "#/$defs/interval"
+        },
+        "timeout": {
+          "$ref": "#/$defs/timeout"
+        },
+        "ports": {
+          "description": "The ports the prober asks on, each a port and its protocol, such as `53/udp` or `53/tcp`.",
+          "$ref": "#/$defs/port_list",
+          "items": {
+            "type": "string",
+            "pattern": "^(6553[0-5]|655[0-2][0-9]|65[0-4][0-9]{2}|6[0-4][0-9]{3}|[1-5][0-9]{4}|[1-9][0-9]{0,3})/(tcp|udp)$"
+          }
+        },
+        "record_types": {
+          "description": "The record types asked for each host, such as `A` or `AAAA`.",
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": {
+            "enum": [
+              "A",
+              "AAAA",
+              "CAA",
+              "CNAME",
+              "MX",
+              "NS",
+              "PTR",
+              "SOA",
+              "SRV",
+              "TXT"
+            ]
+          }
+        }
+      }
+    },
+    "domain_registration_settings": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "interval": {
+          "$ref": "#/$defs/interval"
+        },
+        "timeout": {
+          "$ref": "#/$defs/timeout"
+        },
+        "ports": {
+          "description": "How the prober asks the domain's registry: `443/rdap`, RDAP over HTTPS.",
+          "$ref": "#/$defs/port_list",
+          "items": {
+            "const": "443/rdap"
+          }
         }
       }
     },
     "http_settings": {
       "type": "object",
       "additionalProperties": false,
-      "required": [
-        "interval",
-        "timeout",
-        "ports",
-        "path",
-        "status_codes"
-      ],
       "properties": {
         "interval": {
           "$ref": "#/$defs/interval"
@@ -156,7 +234,12 @@
           "$ref": "#/$defs/timeout"
         },
         "ports": {
-          "$ref": "#/$defs/ports"
+          "description": "The ports the prober requests on, each a port and its protocol, such as `443/https` or `80/http`.",
+          "$ref": "#/$defs/port_list",
+          "items": {
+            "type": "string",
+            "pattern": "^(6553[0-5]|655[0-2][0-9]|65[0-4][0-9]{2}|6[0-4][0-9]{3}|[1-5][0-9]{4}|[1-9][0-9]{0,3})/(http|https)$"
+          }
         },
         "path": {
           "description": "The path requested, such as `/healthz`.",
@@ -176,14 +259,9 @@
         }
       }
     },
-    "tcp_settings": {
+    "ping_settings": {
       "type": "object",
       "additionalProperties": false,
-      "required": [
-        "interval",
-        "timeout",
-        "ports"
-      ],
       "properties": {
         "interval": {
           "$ref": "#/$defs/interval"
@@ -192,7 +270,31 @@
           "$ref": "#/$defs/timeout"
         },
         "ports": {
-          "$ref": "#/$defs/ports"
+          "description": "The ICMP message the prober sends, its type where a port goes: `8/icmp`, an echo request.",
+          "$ref": "#/$defs/port_list",
+          "items": {
+            "const": "8/icmp"
+          }
+        }
+      }
+    },
+    "tcp_settings": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "interval": {
+          "$ref": "#/$defs/interval"
+        },
+        "timeout": {
+          "$ref": "#/$defs/timeout"
+        },
+        "ports": {
+          "description": "The ports the prober connects to, each a port and its protocol, such as `5432/tcp`.",
+          "$ref": "#/$defs/port_list",
+          "items": {
+            "type": "string",
+            "pattern": "^(6553[0-5]|655[0-2][0-9]|65[0-4][0-9]{2}|6[0-4][0-9]{3}|[1-5][0-9]{4}|[1-9][0-9]{0,3})/tcp$"
+          }
         }
       }
     },
@@ -204,19 +306,29 @@
       ],
       "properties": {
         "probers": {
-          "description": "The probers that check the target.",
-          "type": "array",
-          "minItems": 1,
-          "uniqueItems": true,
-          "items": {
-            "enum": [
-              "certificate",
-              "dns",
-              "domain_registration",
-              "http",
-              "ping",
-              "tcp"
-            ]
+          "description": "Prober name to the settings it checks the target with, each overriding the prober's own.",
+          "type": "object",
+          "minProperties": 1,
+          "additionalProperties": false,
+          "properties": {
+            "certificate": {
+              "$ref": "#/$defs/certificate_settings"
+            },
+            "dns": {
+              "$ref": "#/$defs/dns_settings"
+            },
+            "domain_registration": {
+              "$ref": "#/$defs/domain_registration_settings"
+            },
+            "http": {
+              "$ref": "#/$defs/http_settings"
+            },
+            "ping": {
+              "$ref": "#/$defs/ping_settings"
+            },
+            "tcp": {
+              "$ref": "#/$defs/tcp_settings"
+            }
           }
         },
         "addresses": {
@@ -243,15 +355,33 @@
           "if": {
             "properties": {
               "probers": {
-                "contains": {
-                  "enum": [
-                    "certificate",
-                    "dns",
-                    "http",
-                    "ping",
-                    "tcp"
-                  ]
-                }
+                "anyOf": [
+                  {
+                    "required": [
+                      "certificate"
+                    ]
+                  },
+                  {
+                    "required": [
+                      "dns"
+                    ]
+                  },
+                  {
+                    "required": [
+                      "http"
+                    ]
+                  },
+                  {
+                    "required": [
+                      "ping"
+                    ]
+                  },
+                  {
+                    "required": [
+                      "tcp"
+                    ]
+                  }
+                ]
               }
             }
           },
@@ -274,13 +404,23 @@
           "if": {
             "properties": {
               "probers": {
-                "contains": {
-                  "enum": [
-                    "certificate",
-                    "dns",
-                    "http"
-                  ]
-                }
+                "anyOf": [
+                  {
+                    "required": [
+                      "certificate"
+                    ]
+                  },
+                  {
+                    "required": [
+                      "dns"
+                    ]
+                  },
+                  {
+                    "required": [
+                      "http"
+                    ]
+                  }
+                ]
               }
             }
           },
