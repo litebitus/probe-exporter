@@ -83,10 +83,10 @@ The configuration format and the exporter carry separate versions. The format's 
 ## Schedule
 
 - A target's probers each check it: at every address, on every port, for every host it `serves` and every record type, where the prober takes them. Each such check is a run, repeating once per its `interval` on its own schedule.
-- Runs are staggered across the interval by a hash of their place, so they spread out instead of starting together.
+- A run happens as soon as it is scheduled, at start or when a reload adds or changes it, so every check has a result without waiting an interval.
+- After that, runs are staggered across the interval by a hash of their place, so they spread out instead of starting together.
 - A run is bounded by its `timeout`.
 - Runs in flight at once are bounded by half the process's open-file limit, read at start; the other half is kept for the exporter's own connections and files. A run waits for a free slot.
-- A run first happens within its first interval after the configuration loads. It has no result until then.
 
 On reload, a run still configured with the same settings keeps its result and its place in the schedule; a run no longer configured loses its result.
 

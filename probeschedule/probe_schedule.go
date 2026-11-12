@@ -133,7 +133,7 @@ func (probe Probe) fingerprint() string {
 	return strings.Join([]string{probe.Interval.String(), probe.Timeout.String(), probe.ProberSettings}, "\x00")
 }
 
-// StaggerOffset is how far into its interval a probe first runs, the same for the same probe on every start.
+// StaggerOffset is how far into its interval a probe's repeated runs fall, the same for the same probe on every start.
 func StaggerOffset(identity ProbeIdentity, interval time.Duration) time.Duration {
 	hash := fnv.New64a()
 	hash.Write([]byte(strings.Join([]string{
@@ -143,13 +143,15 @@ func StaggerOffset(identity ProbeIdentity, interval time.Duration) time.Duration
 	return time.Duration(hash.Sum64() % uint64(interval))
 }
 
+// repeat runs a probe at once, so it has a result as soon as it is scheduled, then at its stagger offset, then once per interval.
 func (schedule *Schedule) repeat(ctx context.Context, probe Probe) {
-	firstRun := time.NewTimer(StaggerOffset(probe.Identity, probe.Interval))
-	defer firstRun.Stop()
+	schedule.runOnce(ctx, probe)
+	staggeredRun := time.NewTimer(StaggerOffset(probe.Identity, probe.Interval))
+	defer staggeredRun.Stop()
 	select {
 	case <-ctx.Done():
 		return
-	case <-firstRun.C:
+	case <-staggeredRun.C:
 	}
 	ticker := time.NewTicker(probe.Interval)
 	defer ticker.Stop()

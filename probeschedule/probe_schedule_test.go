@@ -161,6 +161,15 @@ func TestTheScheduleRunsEachProbeAndHandsOnItsResult(t *testing.T) {
 	}
 }
 
+// A probe runs as soon as it is scheduled, however long its interval, so it has a result without waiting an interval.
+func TestAProbeRunsAsSoonAsItIsScheduled(t *testing.T) {
+	keeper := newMockKeeper()
+	schedule := NewSchedule(keeper, quietLogger())
+	defer schedule.Stop()
+	schedule.Apply([]Probe{mockProbe("mock-a", &mockProber{succeeds: true}, 6*time.Hour)}, 1)
+	waitFor(t, func() bool { _, kept := keeper.result(mockIdentity("mock-a")); return kept })
+}
+
 func TestAFailedProbeIsHandedOnToo(t *testing.T) {
 	keeper := newMockKeeper()
 	schedule := NewSchedule(keeper, quietLogger())
