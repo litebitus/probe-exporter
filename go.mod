@@ -4,7 +4,6 @@ go 1.27.3
 
 require (
 	github.com/alecthomas/kingpin/v2 v2.4.0
-	github.com/alecthomas/units v0.0.0-20240927000941-0f3dac36c52b
 	github.com/litebitus/yaml-dsl-spec/go v0.3.0
 	github.com/miekg/dns v1.1.73
 	github.com/prometheus/blackbox_exporter v0.29.1
@@ -20,6 +19,7 @@ require (
 require (
 	cel.dev/cel-go v0.32.0 // indirect
 	cel.dev/expr v0.25.2 // indirect
+	github.com/alecthomas/units v0.0.0-20240927000941-0f3dac36c52b // indirect
 	github.com/andybalholm/brotli v1.2.6 // indirect
 	github.com/antlr4-go/antlr/v4 v4.13.1 // indirect
 	github.com/beorn7/perks v1.0.1 // indirect
