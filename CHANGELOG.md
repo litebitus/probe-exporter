@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## v0.2.0 — 2026-11-23
+
 - Configuration
   - `schemas/probe-exporter-v1.1.schema.json`: the `stored_certificate` prober and a target's `environment_variables`.
 - Probers
