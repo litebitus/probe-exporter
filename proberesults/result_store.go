@@ -43,7 +43,7 @@ func (store *ResultStore) Retain(identities map[probeschedule.ProbeIdentity]bool
 	}
 }
 
-// Results are the held results, ordered by probe target, prober, address, port, host and record type.
+// Results are the held results, ordered by probe target, prober, address, port, host, record type and environment variable.
 func (store *ResultStore) Results() []probeschedule.Result {
 	store.mutex.RLock()
 	defer store.mutex.RUnlock()
@@ -56,6 +56,7 @@ func (store *ResultStore) Results() []probeschedule.Result {
 			cmp.Compare(left.Identity.Target.Protocol, right.Identity.Target.Protocol),
 			cmp.Compare(left.Identity.Target.Host, right.Identity.Target.Host),
 			cmp.Compare(left.Identity.Target.RecordType, right.Identity.Target.RecordType),
+			cmp.Compare(left.Identity.Target.EnvironmentVariable, right.Identity.Target.EnvironmentVariable),
 		)
 	})
 }
@@ -87,13 +88,18 @@ func (store *ResultStore) Gather() ([]*dto.MetricFamily, error) {
 }
 
 // IdentityLabels are the labels a result's series carry to name its run's place; no prober's info label takes one of their names.
-var IdentityLabels = []string{"address", "host", "port", "probe_target", "prober", "record_type"}
+var IdentityLabels = []string{"address", "environment_variable", "host", "port", "probe_target", "prober", "record_type"}
 
 func resultLabels(result probeschedule.Result) []*dto.LabelPair {
 	values := map[string]string{
 		"probe_target": result.Identity.ProbeTarget,
 		"prober":       result.Identity.Prober,
-		"address":      result.Identity.Target.Address,
+	}
+	if result.Identity.Target.Address != "" {
+		values["address"] = result.Identity.Target.Address
+	}
+	if result.Identity.Target.EnvironmentVariable != "" {
+		values["environment_variable"] = result.Identity.Target.EnvironmentVariable
 	}
 	if result.Identity.Target.Protocol != "" {
 		values["port"] = strconv.Itoa(result.Identity.Target.Port) + "/" + result.Identity.Target.Protocol

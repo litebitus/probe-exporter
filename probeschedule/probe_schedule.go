@@ -14,13 +14,14 @@ import (
 	dto "github.com/prometheus/client_model/go"
 )
 
-// Target is what one run is against: an address, and the port and its protocol, the host and the record type the run takes, zero and empty where its prober takes none.
+// Target is what one run is against: the address, the port and its protocol, the host, the record type and the environment variable the run takes, zero and empty where its prober takes none.
 type Target struct {
-	Address    string
-	Port       int
-	Protocol   string
-	Host       string
-	RecordType string
+	Address             string
+	Port                int
+	Protocol            string
+	Host                string
+	RecordType          string
+	EnvironmentVariable string
 }
 
 // Prober is a kind of check with its settings: it runs against one target before the context's deadline, registers its series, writes its log, and answers whether the run succeeded.

@@ -25,6 +25,7 @@ const (
 	DomainRegistrationProber = "domain_registration"
 	HTTPProber               = "http"
 	PingProber               = "ping"
+	StoredCertificateProber  = "stored_certificate"
 	TCPProber                = "tcp"
 )
 
@@ -46,11 +47,12 @@ type ProberSettings struct {
 	InfoLabels  []string       `yaml:"info_labels"`
 }
 
-// ProbeTarget is what is probed: where it is reached, the hosts it serves, and the probers that check it with the settings it overrides.
+// ProbeTarget is what is probed: where it is reached, the hosts it serves, the environment variables holding its certificates, and the probers that check it with the settings it overrides.
 type ProbeTarget struct {
-	Addresses []string                  `yaml:"addresses"`
-	Probers   map[string]ProberSettings `yaml:"probers"`
-	Serves    []string                  `yaml:"serves"`
+	Addresses            []string                  `yaml:"addresses"`
+	EnvironmentVariables []string                  `yaml:"environment_variables"`
+	Probers              map[string]ProberSettings `yaml:"probers"`
+	Serves               []string                  `yaml:"serves"`
 }
 
 // Port is a port and the protocol spoken on it, written `443/tcp`; for ICMP, the message type takes the port's place.

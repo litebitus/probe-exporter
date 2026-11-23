@@ -11,7 +11,10 @@ func TestTheAssetsAreEveryMinorAndEachMajorAsItsNewestMinor(t *testing.T) {
 	if err := writeAssets([]string{folder}); err != nil {
 		t.Fatal(err)
 	}
-	minor, err := os.ReadFile(filepath.Join(folder, "probe-exporter-v1.0.schema.json"))
+	if _, err := os.ReadFile(filepath.Join(folder, "probe-exporter-v1.0.schema.json")); err != nil {
+		t.Fatal(err)
+	}
+	minor, err := os.ReadFile(filepath.Join(folder, "probe-exporter-v1.1.schema.json"))
 	if err != nil {
 		t.Fatal(err)
 	}

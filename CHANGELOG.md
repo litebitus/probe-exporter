@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- Configuration
+  - `schemas/probe-exporter-v1.1.schema.json`: the `stored_certificate` prober and a target's `environment_variables`.
+- Probers
+  - `stored_certificate`: the earliest expiry of the certificates in each of a target's environment variables, labeled `environment_variable`.
+
 ## v0.1.0 — 2026-11-12
 
 - Exporter

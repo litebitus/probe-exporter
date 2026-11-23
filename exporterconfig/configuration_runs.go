@@ -5,22 +5,29 @@ import (
 	"slices"
 )
 
-// Run is one check's place: a target, the prober checking it, the address checked, and the port, host and record type the check takes, zero and empty where its prober takes none.
+// Run is one check's place: a target, the prober checking it, and the address, port, host, record type and environment variable the check takes, zero and empty where its prober takes none.
 type Run struct {
-	ProbeTarget string
-	Prober      string
-	Address     string
-	Port        Port
-	Host        string
-	RecordType  string
+	ProbeTarget         string
+	Prober              string
+	Address             string
+	Port                Port
+	Host                string
+	RecordType          string
+	EnvironmentVariable string
 }
 
-// Runs are every check the configuration makes: the targets and each target's probers in name order, each prober at every address, on every port, for every host and record type it takes, in the order written; a target without `serves` is checked for each address as its own host.
+// Runs are every check the configuration makes: the targets and each target's probers in name order, each prober at every address, on every port, for every host and record type it takes, in the order written; a target without `serves` is checked for each address as its own host, and `stored_certificate` checks each environment variable.
 func (configuration Configuration) Runs() []Run {
 	var runs []Run
 	for _, targetName := range slices.Sorted(maps.Keys(configuration.ProbeTargets)) {
 		target := configuration.ProbeTargets[targetName]
 		for _, proberName := range slices.Sorted(maps.Keys(target.Probers)) {
+			if proberName == StoredCertificateProber {
+				for _, variable := range target.EnvironmentVariables {
+					runs = append(runs, Run{ProbeTarget: targetName, Prober: proberName, EnvironmentVariable: variable})
+				}
+				continue
+			}
 			settings := configuration.CheckSettings(targetName, proberName)
 			addresses := target.Addresses
 			if proberName == DomainRegistrationProber {

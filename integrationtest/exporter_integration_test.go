@@ -11,6 +11,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"syscall"
 	"testing"
@@ -105,12 +106,16 @@ func waitFor(t *testing.T, condition func() bool) {
 	}
 }
 
-// mockEdge is what the exporter probes: an HTTPS listener with the certificate authority that issued its certificate, and a registry's RDAP service with its bootstrap.
+// storedCertificateVariable is the environment variable holding the mock listener's certificate as PEM.
+const storedCertificateVariable = "MOCK_STORED_CRT"
+
+// mockEdge is what the exporter probes: an HTTPS listener with the certificate authority that issued its certificate, that certificate stored in an environment variable, and a registry's RDAP service with its bootstrap.
 type mockEdge struct {
 	port                   string
 	trustedAuthoritiesFile string
 	bootstrapURL           string
 	client                 *http.Client
+	certificateExpiry      time.Time
 }
 
 func startMockEdge(t *testing.T) mockEdge {
@@ -123,9 +128,11 @@ func startMockEdge(t *testing.T) mockEdge {
 	t.Cleanup(listener.Close)
 	_, port, _ := net.SplitHostPort(listener.Listener.Addr().String())
 	authorities := filepath.Join(t.TempDir(), "mock-authorities.pem")
-	if err := os.WriteFile(authorities, pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: listener.Certificate().Raw}), 0o600); err != nil {
+	certificatePEM := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: listener.Certificate().Raw})
+	if err := os.WriteFile(authorities, certificatePEM, 0o600); err != nil {
 		t.Fatal(err)
 	}
+	t.Setenv(storedCertificateVariable, string(certificatePEM))
 	registry := httptest.NewTLSServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
 		if request.URL.Path != "/rdap/domain/mock-domain.example" {
 			http.NotFound(writer, request)
@@ -140,7 +147,10 @@ func startMockEdge(t *testing.T) mockEdge {
 		fmt.Fprintf(writer, `{"services":[[["example"],["%s/rdap/"]]]}`, registry.URL)
 	}))
 	t.Cleanup(bootstrap.Close)
-	return mockEdge{port: port, trustedAuthoritiesFile: authorities, bootstrapURL: bootstrap.URL, client: registry.Client()}
+	return mockEdge{
+		port: port, trustedAuthoritiesFile: authorities, bootstrapURL: bootstrap.URL, client: registry.Client(),
+		certificateExpiry: listener.Certificate().NotAfter,
+	}
 }
 
 func (edge mockEdge) programSettings(reloadSignals chan os.Signal) exporterapp.ProgramSettings {
@@ -150,10 +160,13 @@ func (edge mockEdge) programSettings(reloadSignals chan os.Signal) exporterapp.P
 	}
 }
 
-// configuration checks the listener, as the target named, with the certificate, http and tcp probers, the target overriding the http path, and two domains' registrations.
+// configuration checks the listener, as the target named, with the certificate, http and tcp probers, the target overriding the http path, two domains' registrations, and the stored certificate with an unset variable beside it.
 func (edge mockEdge) configuration(targetName string) string {
 	return `version: "1"
 probers:
+  stored_certificate:
+    interval: 500ms
+    timeout: 500ms
   certificate:
     interval: 500ms
     timeout: 500ms
@@ -188,6 +201,10 @@ probe_targets:
   mock-missing.example:
     probers:
       domain_registration: {}
+  mock-stored:
+    probers:
+      stored_certificate: {}
+    environment_variables: [` + storedCertificateVariable + `, MOCK_UNSET_CRT]
 `
 }
 
@@ -195,6 +212,9 @@ probe_targets:
 func TestTheExporterServesEachConfiguredTargetsResult(t *testing.T) {
 	edge := startMockEdge(t)
 	exporter := startExporter(t, edge, edge.configuration("mock-cdn"))
+	storedPlace := func(variable string) string {
+		return `environment_variable="` + variable + `",probe_target="mock-stored",prober="stored_certificate"`
+	}
 	place := func(prober, protocol string) string {
 		return `address="127.0.0.1",host="` + trustedHost + `",port="` + edge.port + "/" + protocol + `",probe_target="mock-cdn",prober="` + prober + `"`
 	}
@@ -207,6 +227,10 @@ func TestTheExporterServesEachConfiguredTargetsResult(t *testing.T) {
 		`probe_domain_registration_expiry_timestamp_seconds{address="mock-domain.example",port="443/rdap",probe_target="mock-domain.example",prober="domain_registration"} 1.8187344e+09`,
 		`probe_domain_registration_info{address="mock-domain.example",name_servers="ns-1.mock-dns.example",port="443/rdap",probe_target="mock-domain.example",prober="domain_registration",registrar="Mock Registrar"} 1`,
 		`probe_success{address="mock-missing.example",port="443/rdap",probe_target="mock-missing.example",prober="domain_registration"} 0`,
+		`probe_success{` + storedPlace(storedCertificateVariable) + `} 1`,
+		`probe_stored_certificate_expiry_timestamp_seconds{` + storedPlace(storedCertificateVariable) + `} ` +
+			strconv.FormatFloat(float64(edge.certificateExpiry.Unix()), 'g', -1, 64) + "\n",
+		`probe_success{` + storedPlace("MOCK_UNSET_CRT") + `} 0`,
 		`probe_exporter_config_last_reload_successful 1`,
 	}
 	waitFor(t, func() bool {
@@ -219,7 +243,10 @@ func TestTheExporterServesEachConfiguredTargetsResult(t *testing.T) {
 		return true
 	})
 	results := exporter.get(t, "/results")
-	for _, part := range []string{"<td>mock-missing.example</td>", "the registry answered without the domain&#39;s registration"} {
+	for _, part := range []string{
+		"<td>mock-missing.example</td>", "the registry answered without the domain&#39;s registration",
+		"<td>MOCK_UNSET_CRT</td>", "the environment variable is not set",
+	} {
 		if !strings.Contains(results, part) {
 			t.Errorf("the results page holds no %q", part)
 		}

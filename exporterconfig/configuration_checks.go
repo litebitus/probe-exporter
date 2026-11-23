@@ -60,7 +60,7 @@ func timingProblems(settings ProberSettings, root yamldslspec.Node, path ...any)
 // missingSettings are the settings a check needs that neither its prober nor its target states.
 func missingSettings(proberName string, settings CheckSettings) []string {
 	var missing []string
-	if len(settings.Ports) == 0 {
+	if len(settings.Ports) == 0 && proberName != StoredCertificateProber {
 		missing = append(missing, "ports")
 	}
 	if proberName == HTTPProber && settings.Path == "" {

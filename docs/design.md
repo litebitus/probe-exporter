@@ -2,7 +2,7 @@
 
 probe-exporter is an OpenMetrics exporter that probes the targets its configuration lists, on a schedule, and serves the latest result of each check. It owns its targets: a scraper needs only the exporter's address.
 
-The configuration is written from the user's side: what is probed, and which probers check it. How a prober carries out its check is the exporter's own concern. Most probers are carried out by blackbox_exporter's probers, imported as a library; `domain_registration` is the exporter's own.
+The configuration is written from the user's side: what is probed, and which probers check it. How a prober carries out its check is the exporter's own concern. Most probers are carried out by blackbox_exporter's probers, imported as a library; `domain_registration` and `stored_certificate` are the exporter's own.
 
 ## Concepts
 
@@ -10,7 +10,7 @@ The configuration is written from the user's side: what is probed, and which pro
 |---|---|
 | prober | a kind of check, such as `certificate` or `domain_registration` |
 | probe target | what is probed, named in the configuration, with the probers that check it |
-| run | one check of a probe target by one of its probers, at one address, port, host and record type where the prober takes them |
+| run | one check of a probe target by one of its probers, at one address, port, host, record type and environment variable where the prober takes them |
 | result | what the latest run produced: its success, its series and its log |
 
 ## Configuration
@@ -24,6 +24,7 @@ The configuration is one YAML file, named by `--config.file`. [`examples/probe-e
 | `probe_targets` | target name → the target |
 | `probers` of a target | prober name → the settings the target overrides, `{}` where it overrides none |
 | `addresses` | where the target is reached, each a host name without a port |
+| `environment_variables` | the exporter's environment variables holding the target's certificates as PEM |
 | `serves` | the hosts the target serves, each a host name without a wildcard; without it, a `certificate` or `http` check takes each address as its host |
 
 A prober's settings and a target's override are the same settings; a target states only those it changes:
@@ -32,7 +33,7 @@ A prober's settings and a target's override are the same settings; a target stat
 |---|---|---|
 | `interval` | how often the prober checks each target | every prober |
 | `timeout` | how long one check may take, no longer than `interval` | every prober |
-| `ports` | the ports checked, each a port and the protocol spoken on it, such as `443/tcp` | every prober |
+| `ports` | the ports checked, each a port and the protocol spoken on it, such as `443/tcp` | every prober that has ports |
 | `path`, `status_codes` | the path requested, and the status codes that answer it successfully | `http` |
 | `record_types` | the record types asked for each host, such as `A` | `dns` |
 | `info_labels` | the optional facts the prober publishes about what it checked, each a label of its info series; optional, none where left out | each prober that has info labels |
@@ -46,10 +47,11 @@ Each prober speaks its own protocols on its ports, and a target gives it what it
 | `domain_registration` | `443/rdap`, the registry's RDAP service | its name, a domain |
 | `http` | `<port>/http`, `<port>/https` | `addresses`, and `serves` where the hosts are not the addresses |
 | `ping` | `8/icmp`, an echo request, its ICMP type where a port goes | `addresses` |
+| `stored_certificate` | none | `environment_variables` |
 | `tcp` | `<port>/tcp` | `addresses` |
 
 - A target is one group: everything in it is checked the same way. A host that needs different checks is a target of its own.
-- A target gives `addresses` and `serves` only when one of its probers takes them.
+- A target gives `addresses`, `serves` and `environment_variables` only when one of its probers takes them.
 - `interval` and `timeout` are stated under `probers`; every other setting is stated there or by each target. A value is refused, never corrected.
 - A configuration is held to the schema of the version it states before anything in it is read, then to the rules a schema cannot state: every `interval` and `timeout` above zero, every prober a target names given its settings under `probers`, every setting a check needs stated by its prober or its target, no check's `timeout` longer than its `interval`, and a target checked by `domain_registration` named by its domain.
 - A configuration file larger than 1 MiB is refused.
@@ -83,7 +85,7 @@ The configuration format and the exporter carry separate versions. The format's 
 
 ## Schedule
 
-- A target's probers each check it: at every address, on every port, for every host it `serves` and every record type, where the prober takes them. Each such check is a run, repeating once per its `interval` on its own schedule.
+- A target's probers each check it: at every address, on every port, for every host it `serves`, every record type and every environment variable, where the prober takes them. Each such check is a run, repeating once per its `interval` on its own schedule.
 - A run happens as soon as it is scheduled, at start or when a reload adds or changes it, so every check has a result without waiting an interval.
 - After that, runs are staggered across the interval by a hash of their place, so they spread out instead of starting together.
 - A run is bounded by its `timeout`.
@@ -104,6 +106,7 @@ Every series of a result carries:
 | `probe_target` | the target's name |
 | `prober` | the prober |
 | `address` | the address checked; for `domain_registration`, the domain |
+| `environment_variable` | the environment variable read, for `stored_certificate` |
 | `port` | the port checked and its protocol, such as `443/tcp` |
 | `host` | the host checked for, where the prober takes the hosts a target serves |
 | `record_type` | the record type asked, for `dns` |
@@ -128,7 +131,7 @@ A check that chooses `info_labels` also has an info series, `probe_<prober>_info
 | Path | Answers |
 |---|---|
 | `/metrics` | every run's result, and the exporter's own series; OpenMetrics when the scraper asks for it, the Prometheus text format otherwise |
-| `/results` | every run's latest result: its target, prober, address, port, host and record type, whether it succeeded, when it ran, how long it took, and its log |
+| `/results` | every run's latest result: its target, prober, address, port, host, record type and environment variable, whether it succeeded, when it ran, how long it took, and its log |
 | `/-/healthy` | `200` while the process runs |
 | `/-/ready` | `200` once a configuration has loaded |
 
@@ -152,6 +155,7 @@ A prober is one interface: it checks one run's place within a deadline, adds its
 | `domain_registration` | reads when the domain's registration expires | the exporter's RDAP prober |
 | `http` | requests `path` from the address and port over the port's protocol, as the host, reading at most 1 MiB of the answer, and succeeds on one of `status_codes` | blackbox's `http` prober, the host as the `Host` header and the TLS server name |
 | `ping` | pings the address | blackbox's `icmp` prober |
+| `stored_certificate` | reads when the certificates in an environment variable expire | the exporter's stored certificate prober |
 | `tcp` | connects to the address and port | blackbox's `tcp` prober |
 
 A blackbox prober runs exactly as blackbox's own handler would, with a module the exporter builds from the settings each target is checked with. Each module resolves a host name to IPv4 first, falling back to IPv6.
@@ -179,6 +183,20 @@ The `domain_registration` prober reads a domain's registration from its registry
 A fact the registry's answer does not name is an empty label.
 
 A failed run logs why: no registry for the domain's top-level domain, the registry's answer, or an answer without an `expiration` event.
+
+### stored_certificate
+
+The `stored_certificate` prober reads certificates the exporter holds, such as a client certificate or a certificate authority kept in a secret store and handed to the exporter as an environment variable.
+
+- A run reads one of the target's `environment_variables` as PEM. A block other than `CERTIFICATE`, such as a private key, is skipped.
+- A run succeeds when the variable holds at least one certificate and every certificate in it reads.
+- The variable's value is never logged; a certificate's subject and expiry are.
+
+| Series | Value |
+|---|---|
+| `probe_stored_certificate_expiry_timestamp_seconds` | when the earliest certificate in the variable expires |
+
+A failed run logs why: the variable is not set, it holds no PEM certificate, or a certificate in it does not read.
 
 ## Distribution
 

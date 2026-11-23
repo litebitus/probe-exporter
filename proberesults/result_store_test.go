@@ -44,7 +44,7 @@ func labelsOf(metric *dto.Metric) string {
 	return strings.Join(pairs, ",")
 }
 
-// Every series of a result carries its run's place, in label-name order, beside the prober's own; a port, host or record type the run took none of is no label.
+// Every series of a result carries its run's place, in label-name order, beside the prober's own; an address, port, host, record type or environment variable the run took none of is no label.
 func TestEachSeriesCarriesItsRunsPlace(t *testing.T) {
 	store := NewResultStore()
 	store.Keep(mockResult("mock-a.example", "192.0.2.10", true, mockFamily("mock_value", 7, "mock_prober_label", "mock")))
@@ -55,14 +55,19 @@ func TestEachSeriesCarriesItsRunsPlace(t *testing.T) {
 	registration := mockResult("", "mock-domain.example", true, mockFamily("mock_value", 9))
 	registration.Identity.Prober, registration.Identity.Target.Port, registration.Identity.Target.Protocol = "domain_registration", 0, ""
 	store.Keep(registration)
+	stored := mockResult("", "", true, mockFamily("mock_value", 10))
+	stored.Identity.Prober, stored.Identity.Target.Port, stored.Identity.Target.Protocol = "stored_certificate", 0, ""
+	stored.Identity.Target.EnvironmentVariable = "MOCK_CA_CRT"
+	store.Keep(stored)
 	families, err := store.Gather()
-	if err != nil || len(families) != 1 || len(families[0].Metric) != 3 {
+	if err != nil || len(families) != 1 || len(families[0].Metric) != 4 {
 		t.Fatalf("families = %v (%v)", families, err)
 	}
 	want := []string{
 		"address=192.0.2.10,host=mock-a.example,mock_prober_label=mock,port=443/tcp,probe_target=mock-target,prober=certificate",
 		"address=192.0.2.53,host=mock-a.example,port=53/udp,probe_target=mock-target,prober=dns,record_type=AAAA",
 		"address=mock-domain.example,probe_target=mock-target,prober=domain_registration",
+		"environment_variable=MOCK_CA_CRT,probe_target=mock-target,prober=stored_certificate",
 	}
 	for index, metric := range families[0].Metric {
 		if got := labelsOf(metric); got != want[index] {
@@ -76,6 +81,7 @@ func TestTheIdentityLabelsAreTheLabelsTheStoreSets(t *testing.T) {
 	store := NewResultStore()
 	lookup := mockResult("mock-a.example", "192.0.2.53", true, mockFamily("mock_value", 8))
 	lookup.Identity.Target.RecordType = "AAAA"
+	lookup.Identity.Target.EnvironmentVariable = "MOCK_CA_CRT"
 	store.Keep(lookup)
 	families, _ := store.Gather()
 	var set []string

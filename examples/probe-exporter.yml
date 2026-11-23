@@ -1,4 +1,4 @@
-# yaml-language-server: $schema=../schemas/probe-exporter-v1.0.schema.json
+# yaml-language-server: $schema=../schemas/probe-exporter-v1.1.schema.json
 version: "1"
 
 probers:
@@ -26,6 +26,9 @@ probers:
     interval: 1m
     timeout: 5s
     ports: [8/icmp]
+  stored_certificate:
+    interval: 1h
+    timeout: 5s
   tcp:
     interval: 1m
     timeout: 5s
@@ -62,6 +65,10 @@ probe_targets:
         interval: 5m
         timeout: 10s
     serves: [api.example.com, www.example.com]
+  mock-kafka-certificates:
+    probers:
+      stored_certificate: {}
+    environment_variables: [MOCK_KAFKA_CA_CRT, MOCK_KAFKA_USER_CRT]
   mock-web-servers:
     addresses: [mock-web-servers.example.net]
     probers:

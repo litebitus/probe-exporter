@@ -38,10 +38,17 @@ probers:
     interval: 1m
     timeout: 3s
     ports: [8/icmp]
+  stored_certificate:
+    interval: 1h
+    timeout: 5s
   tcp:
     interval: 1m
     timeout: 3s
 probe_targets:
+  mock-kafka:
+    probers:
+      stored_certificate: {}
+    environment_variables: [MOCK_USER_CRT, MOCK_CA_CRT]
   mock-api:
     addresses: [mock-api.example]
     probers:
@@ -125,7 +132,7 @@ func reportsProblem(err error, messageStart, location string) bool {
 
 func TestAConfigurationParsesIntoItsProbersAndTargets(t *testing.T) {
 	configuration := parsed(t, mockConfiguration)
-	if configuration.Version != "1.0" || len(configuration.Probers) != 6 || len(configuration.ProbeTargets) != 6 {
+	if configuration.Version != "1.1" || len(configuration.Probers) != 7 || len(configuration.ProbeTargets) != 7 {
 		t.Fatalf("configuration = %+v", configuration)
 	}
 	cdn := configuration.ProbeTargets["mock-cdn"]
@@ -154,6 +161,9 @@ func TestATargetOverridesTheProbersSettingsItStates(t *testing.T) {
 		"ports and path overridden, status codes the prober's": {"mock-web", "http", CheckSettings{
 			Interval: time.Minute, Timeout: 5 * time.Second, Ports: []Port{{80, "http"}}, Path: "/status", StatusCodes: []int{200},
 		}},
+		"a stored certificate, without ports": {"mock-kafka", "stored_certificate", CheckSettings{
+			Interval: time.Hour, Timeout: 5 * time.Second,
+		}},
 	} {
 		if got := configuration.CheckSettings(testCase.target, testCase.prober); !reflect.DeepEqual(got, testCase.want) {
 			t.Errorf("%s: settings = %+v, want %+v", name, got, testCase.want)
@@ -173,36 +183,60 @@ func TestATargetChoosesItsOwnInfoLabels(t *testing.T) {
 }
 
 func TestAMinorStatedReadsAsItselfAndAMajorAsItsNewestMinor(t *testing.T) {
-	for stated, want := range map[string]string{`"1"`: "1.0", `"1.0"`: "1.0"} {
+	for stated, want := range map[string]string{`"1"`: "1.1", `"1.1"`: "1.1"} {
 		if got := parsed(t, changed(t, `version: "1"`, "version: "+stated)).Version; got != want {
 			t.Errorf("version %s reads as %s, want %s", stated, got, want)
 		}
 	}
+	withoutStoredCertificate := strings.NewReplacer(
+		"  stored_certificate:\n    interval: 1h\n    timeout: 5s\n", "",
+		"  mock-kafka:\n    probers:\n      stored_certificate: {}\n    environment_variables: [MOCK_USER_CRT, MOCK_CA_CRT]\n", "",
+		`version: "1"`, `version: "1.0"`,
+	).Replace(mockConfiguration)
+	if got := parsed(t, withoutStoredCertificate).Version; got != "1.0" {
+		t.Errorf("version \"1.0\" reads as %s", got)
+	}
 }
 
-// A target is checked by each of its probers: at every address, on every port, for every host it serves and every record type where the prober takes them; a target that serves no other hosts is checked at each address as its own host, and a domain is checked as itself.
+// A configuration stating a minor is held to that minor's schema, which knows no prober a later minor adds.
+func TestAMinorIsHeldToItsOwnSchema(t *testing.T) {
+	_, err := Parse(mockSource, []byte(changed(t, `version: "1"`, `version: "1.0"`)))
+	if err == nil || !strings.Contains(err.Error(), "`stored_certificate` is not defined in the schema") {
+		t.Errorf("err = %v", err)
+	}
+}
+
+// A target is checked by each of its probers: at every address, on every port, for every host it serves, every record type and every environment variable where the prober takes them; a target that serves no other hosts is checked at each address as its own host, and a domain is checked as itself.
 func TestEachProberChecksEachAddressPortHostAndRecordTypeItTakes(t *testing.T) {
 	var got []string
 	for _, run := range parsed(t, mockConfiguration).Runs() {
-		got = append(got, strings.Join([]string{run.ProbeTarget, run.Prober, run.Address, run.Port.String(), run.Host, run.RecordType}, "|"))
+		port := ""
+		if run.Port.Protocol != "" {
+			port = run.Port.String()
+		}
+		got = append(got, strings.Join([]string{
+			run.ProbeTarget, run.Prober, run.Address, port, run.Host, run.RecordType, run.EnvironmentVariable,
+		}, "|"))
 	}
 	want := []string{
-		"mock-api|certificate|mock-api.example|443/tcp|mock-api.example|",
-		"mock-cdn|certificate|192.0.2.10|443/tcp|mock-a.example|",
-		"mock-cdn|certificate|192.0.2.10|443/tcp|mock-b.example|",
-		"mock-cdn|certificate|192.0.2.10|8443/tcp|mock-a.example|",
-		"mock-cdn|certificate|192.0.2.10|8443/tcp|mock-b.example|",
-		"mock-cdn|certificate|192.0.2.11|443/tcp|mock-a.example|",
-		"mock-cdn|certificate|192.0.2.11|443/tcp|mock-b.example|",
-		"mock-cdn|certificate|192.0.2.11|8443/tcp|mock-a.example|",
-		"mock-cdn|certificate|192.0.2.11|8443/tcp|mock-b.example|",
-		"mock-cdn|ping|192.0.2.10|8/icmp||",
-		"mock-cdn|ping|192.0.2.11|8/icmp||",
-		"mock-database|tcp|192.0.2.20|5432/tcp||",
-		"mock-domain.example|domain_registration|mock-domain.example|443/rdap||",
-		"mock-resolver|dns|192.0.2.53|53/udp|mock-a.example|A",
-		"mock-resolver|dns|192.0.2.53|53/udp|mock-a.example|AAAA",
-		"mock-web|http|192.0.2.30|80/http|mock-a.example|",
+		"mock-api|certificate|mock-api.example|443/tcp|mock-api.example||",
+		"mock-cdn|certificate|192.0.2.10|443/tcp|mock-a.example||",
+		"mock-cdn|certificate|192.0.2.10|443/tcp|mock-b.example||",
+		"mock-cdn|certificate|192.0.2.10|8443/tcp|mock-a.example||",
+		"mock-cdn|certificate|192.0.2.10|8443/tcp|mock-b.example||",
+		"mock-cdn|certificate|192.0.2.11|443/tcp|mock-a.example||",
+		"mock-cdn|certificate|192.0.2.11|443/tcp|mock-b.example||",
+		"mock-cdn|certificate|192.0.2.11|8443/tcp|mock-a.example||",
+		"mock-cdn|certificate|192.0.2.11|8443/tcp|mock-b.example||",
+		"mock-cdn|ping|192.0.2.10|8/icmp|||",
+		"mock-cdn|ping|192.0.2.11|8/icmp|||",
+		"mock-database|tcp|192.0.2.20|5432/tcp|||",
+		"mock-domain.example|domain_registration|mock-domain.example|443/rdap|||",
+		"mock-kafka|stored_certificate|||||MOCK_USER_CRT",
+		"mock-kafka|stored_certificate|||||MOCK_CA_CRT",
+		"mock-resolver|dns|192.0.2.53|53/udp|mock-a.example|A|",
+		"mock-resolver|dns|192.0.2.53|53/udp|mock-a.example|AAAA|",
+		"mock-web|http|192.0.2.30|80/http|mock-a.example||",
 	}
 	if !reflect.DeepEqual(got, want) {
 		t.Errorf("runs =\n%s\nwant\n%s", strings.Join(got, "\n"), strings.Join(want, "\n"))
@@ -214,9 +248,9 @@ func TestTheVersionIsCheckedBeforeAnythingElse(t *testing.T) {
 	for name, testCase := range map[string]struct {
 		text, message, location string
 	}{
-		"missing":     {changed(t, `version: "1"`+"\n", ""), "`version` is required, quoted, one of `\"1\"` or `\"1.0\"`", mockSource + ":1:1"},
-		"unquoted":    {changed(t, `version: "1"`, "version: 1"), "`version` is required, quoted, one of `\"1\"` or `\"1.0\"`", mockSource + ":1:10"},
-		"not carried": {changed(t, `version: "1"`, `version: "2"`), "`version` `\"2\"` is not a version this exporter reads; it reads `\"1\"` or `\"1.0\"`", mockSource + ":1:10"},
+		"missing":     {changed(t, `version: "1"`+"\n", ""), "`version` is required, quoted, one of `\"1\"`, `\"1.0\"` or `\"1.1\"`", mockSource + ":1:1"},
+		"unquoted":    {changed(t, `version: "1"`, "version: 1"), "`version` is required, quoted, one of `\"1\"`, `\"1.0\"` or `\"1.1\"`", mockSource + ":1:10"},
+		"not carried": {changed(t, `version: "1"`, `version: "2"`), "`version` `\"2\"` is not a version this exporter reads; it reads `\"1\"`, `\"1.0\"` or `\"1.1\"`", mockSource + ":1:10"},
 	} {
 		_, err := Parse(mockSource, []byte(testCase.text))
 		if !reportsProblem(err, testCase.message, testCase.location) || strings.Count(err.Error(), "error: ") != 1 {
@@ -236,7 +270,7 @@ func TestEveryUnusableValueIsReportedWhereItIs(t *testing.T) {
 		"http on tcp":                              {"ports: [80/http]", "ports: [80/tcp]", "`ports[0]` must match pattern", "80/tcp"},
 		"a ping that is no echo":                   {"ports: [8/icmp]", "ports: [0/icmp]", "`ports[0]`", "0/icmp"},
 		"registration over whois":                  {"ports: [443/rdap]", "ports: [43/whois]", "`ports[0]`", "43/whois"},
-		"unknown record type":                      {"record_types: [A, AAAA]", "record_types: [A, MOCK]", "`record_types[1]` must be one of", "MOCK"},
+		"unknown record type":                      {"record_types: [A, AAAA]", "record_types: [A, MOCK]", "`record_types[1]` must be one of", "MOCK]"},
 		"unknown info label":                       {"info_labels: [registrar, name_servers]", "info_labels: [registrar, mock_label]", "`info_labels[1]` must be one of `\"name_servers\"`, `\"registrar\"`", "mock_label"},
 		"info labels on a prober with none":        {"    ports: [8/icmp]\n", "    ports: [8/icmp]\n    info_labels: [registrar]\n", "`info_labels` is not defined in the schema", "info_labels: [registrar]\n"},
 		"a dns check without serves":               {"    serves: [mock-a.example]\n  mock-web", "  mock-web", "`serves` is required", "mock-resolver:"},
@@ -248,6 +282,10 @@ func TestEveryUnusableValueIsReportedWhereItIs(t *testing.T) {
 		"a zero override":                          {"        timeout: 4s\n", "        timeout: 0s\n", "`timeout` must be above zero", "0s\n    serves"},
 		"a zero interval":                          {"interval: 6h", "interval: 0s", "`interval` must be above zero", "0s\n    timeout: 10s"},
 		"registration of a name that is no domain": {"  mock-domain.example:", "  mock-domain:", "`mock-domain` is checked by `domain_registration`, so it is named by its domain", "mock-domain:"},
+		"a stored certificate without environment variables": {
+			"    environment_variables: [MOCK_USER_CRT, MOCK_CA_CRT]\n", "", "`environment_variables` is required", "mock-kafka:",
+		},
+		"ports on a stored certificate": {"    interval: 1h\n", "    interval: 1h\n    ports: [443/tcp]\n", "`ports` is not defined in the schema", "ports: [443/tcp]\n    timeout: 5s"},
 	} {
 		text := changed(t, testCase.old, testCase.replacement)
 		location := locationOf(t, text, testCase.at)
@@ -311,7 +349,7 @@ func TestAFileLoadsAsItsTextParsesAndIsNamedByItsPath(t *testing.T) {
 	if err := os.WriteFile(path, []byte(mockConfiguration), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if configuration, err := LoadFile(path); err != nil || len(configuration.ProbeTargets) != 6 {
+	if configuration, err := LoadFile(path); err != nil || len(configuration.ProbeTargets) != 7 {
 		t.Errorf("configuration = %+v (%v)", configuration, err)
 	}
 	text := changed(t, "interval: 6h", "interval: 0s")

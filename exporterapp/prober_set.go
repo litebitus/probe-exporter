@@ -3,14 +3,16 @@ package exporterapp
 import (
 	"fmt"
 	"net/http"
+	"os"
 
 	"github.com/litebitus/probe-exporter/blackboxprobers"
 	"github.com/litebitus/probe-exporter/exporterconfig"
 	"github.com/litebitus/probe-exporter/probeschedule"
 	"github.com/litebitus/probe-exporter/rdapprober"
+	"github.com/litebitus/probe-exporter/storedcertificateprober"
 )
 
-// proberSet makes the prober each target is checked by, `domain_registration` from one shared RDAP bootstrap and every other from blackbox_exporter's probers.
+// proberSet makes the prober each target is checked by: `domain_registration` from one shared RDAP bootstrap, `stored_certificate` from the process's environment, and every other from blackbox_exporter's probers.
 type proberSet struct {
 	rdapBootstrap          *rdapprober.Bootstrap
 	rdapClient             *http.Client
@@ -22,8 +24,11 @@ func newProberSet(bootstrap *rdapprober.Bootstrap, client *http.Client, trustedA
 }
 
 func (probers *proberSet) prober(proberName string, settings exporterconfig.CheckSettings) (probeschedule.Prober, error) {
-	if proberName == exporterconfig.DomainRegistrationProber {
+	switch proberName {
+	case exporterconfig.DomainRegistrationProber:
 		return rdapprober.NewRDAPProber(probers.rdapBootstrap, probers.rdapClient, settings.InfoLabels)
+	case exporterconfig.StoredCertificateProber:
+		return storedcertificateprober.NewStoredCertificateProber(os.LookupEnv), nil
 	}
 	return blackboxprobers.NewBlackboxProber(proberName, settings, probers.trustedAuthoritiesFile)
 }
@@ -49,6 +54,7 @@ func (probers *proberSet) probes(configuration exporterconfig.Configuration) ([]
 				Prober:      run.Prober,
 				Target: probeschedule.Target{
 					Address: run.Address, Port: run.Port.Number, Protocol: run.Port.Protocol, Host: run.Host, RecordType: run.RecordType,
+					EnvironmentVariable: run.EnvironmentVariable,
 				},
 			},
 			Interval:       settings.Interval,

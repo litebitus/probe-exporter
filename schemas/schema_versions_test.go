@@ -19,14 +19,14 @@ import (
 )
 
 func TestAConfigurationStatesAMajorOrAMinor(t *testing.T) {
-	if got := StatedVersions(); !slices.Equal(got, []string{"1", "1.0"}) {
+	if got := StatedVersions(); !slices.Equal(got, []string{"1", "1.0", "1.1"}) {
 		t.Errorf("stated versions = %v", got)
 	}
 }
 
 func TestAMajorFloatsToItsNewestMinorAndAMinorNamesItself(t *testing.T) {
 	newest := minorSchemas[len(minorSchemas)-1]
-	for stated, want := range map[string]string{strconv.Itoa(newest.major): newest.version(), "1.0": "1.0"} {
+	for stated, want := range map[string]string{strconv.Itoa(newest.major): newest.version(), "1.0": "1.0", "1.1": "1.1"} {
 		text, got, err := SchemaFor(stated)
 		if err != nil || got != want || !strings.Contains(string(text), `"$id": "https://github.com/litebitus/probe-exporter/schemas/probe-exporter-v`+want) {
 			t.Errorf("%s reads as %s (%v), want %s", stated, got, err, want)
@@ -171,10 +171,17 @@ probers:
     interval: 1m
     timeout: 3s
     ports: [8/icmp]
+  stored_certificate:
+    interval: 1h
+    timeout: 5s
   tcp:
     interval: 1m
     timeout: 3s
 probe_targets:
+  mock-kafka:
+    probers:
+      stored_certificate: {}
+    environment_variables: [MOCK_CA_CRT, MOCK_USER_CRT]
   mock-cdn:
     addresses: [192.0.2.10, mock-cdn.example.net]
     probers:
@@ -304,6 +311,16 @@ func TestTheSchemaRefusesWhatTheExporterRefuses(t *testing.T) {
 		"wildcard host":                     {"serves: [mock-a.example]\n  mock-database:", "serves: [\"*.mock.example\"]\n  mock-database:"},
 		"unknown target field":              {"      domain_registration: {}\n", "      domain_registration: {}\n    mock_field: 1\n"},
 		"a field of an earlier form":        {"  certificate:\n", "  certificate:\n    prober: tcp\n"},
+		"ports on a stored certificate":     {"    interval: 1h\n", "    interval: 1h\n    ports: [443/tcp]\n"},
+		"a stored certificate without environment variables": {
+			"    environment_variables: [MOCK_CA_CRT, MOCK_USER_CRT]\n", "",
+		},
+		"environment variables on a ping": {"        timeout: 1s\n", "        timeout: 1s\n    environment_variables: [MOCK_CA_CRT]\n"},
+		"addresses on a stored certificate": {
+			"      stored_certificate: {}\n", "      stored_certificate: {}\n    addresses: [192.0.2.10]\n",
+		},
+		"an environment variable name with a dash": {"[MOCK_CA_CRT, MOCK_USER_CRT]", "[MOCK-CA-CRT]"},
+		"a repeated environment variable":          {"[MOCK_CA_CRT, MOCK_USER_CRT]", "[MOCK_CA_CRT, MOCK_CA_CRT]"},
 	} {
 		if !strings.Contains(mockConfiguration, change[0]) {
 			t.Fatalf("%s: the mock configuration holds no %q", name, change[0])
